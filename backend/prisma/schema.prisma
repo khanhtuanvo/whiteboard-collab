@@ -1,0 +1,116 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  avatarUrl    String?  @map("avatar_url")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  ownedBoards    Board[]             @relation("BoardOwner")
+  collaborations BoardCollaborator[]
+  elements       Element[]
+  snapshots      Snapshot[]
+
+  @@map("users")
+}
+
+model Board {
+  id String @id @default(uuid())
+  title String 
+  ownerId String @map("owner_id")
+  thumbnailUrl String? @map("thumbnail_url")
+  isPublic Boolean @default(false) @map("is_public")
+  settings Json?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  owner User @relation("BoardOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  collaborators BoardCollaborator[]
+  elements Element[]
+  snapshots Snapshot[]
+
+  @@index([ownerId])
+  @@map("boards")
+}
+
+model BoardCollaborator {
+  id String @id @default(uuid())
+  boardId String @map("board_id")
+  userId String @map("user_id")
+  role Role @default(EDITOR)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([boardId, userId])
+  @@index([boardId])
+  @@index([userId])
+  @@map("board_collaborators")
+
+}
+
+
+enum Role {
+  VIEWER
+  EDITOR
+  ADMIN
+}
+
+model Element {
+  id String @id @default(uuid())
+  boardId String @map("board_id")
+  type ElementType 
+  properties Json
+  zIndex Int @default(0) @map("z_index")
+  createdBy String @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id])
+
+  @@index([boardId])
+  @@index([zIndex])
+  @@map("elements")
+}
+
+enum ElementType {
+  RECTANGLE
+  CIRCLE
+  LINE
+  TEXT
+  STICKY_NOTE
+  IMAGE
+  ARROW
+}
+
+model Snapshot {
+  id String @id @default(uuid())
+  boardId String @map("board_id")
+  s3Key String @map("s3_key")
+  createdBy String @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id])
+
+  @@index([boardId])
+  @@map("snapshots")
+}
