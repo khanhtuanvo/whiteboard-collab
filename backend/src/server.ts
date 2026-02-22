@@ -8,6 +8,8 @@ import redis from './config/redis';
 import { timeStamp } from 'console';
 import { AuthController } from './controllers/auth.controller';
 import { authMiddleware } from './middleware/auth.middleware';
+import { BoardController } from './controllers/board.controller';
+
 
 dotenv.config();
 
@@ -29,6 +31,8 @@ app.use(express.json());
 
 //Controllers
 const authController = new AuthController();
+const boardController = new BoardController();
+
 
 app.get('/health', async (req, res) => {
     try {
@@ -52,6 +56,7 @@ app.get('/health', async (req, res) => {
     }
 })
 
+
 // Auth routes
 app.post('/api/auth/register', (req, res) => authController.register(req, res));
 app.post('/api/auth/login', (req, res) => authController.login(req, res));
@@ -61,6 +66,15 @@ app.get('/api/auth/profile', authMiddleware, (req, res) => authController.getPro
 app.get('/api/test-protected', authMiddleware, (req, res) => {
   res.json({ message: 'This is a protected route', userId: (req as any).userId });
 });
+
+// Board routes (protected)
+app.get('/api/boards', authMiddleware, (req, res) => boardController.getBoards(req, res));
+app.get('/api/boards/:id', authMiddleware, (req, res) => boardController.getBoard(req, res));
+app.post('/api/boards', authMiddleware, (req, res) => boardController.createBoard(req, res));
+app.patch('/api/boards/:id', authMiddleware, (req, res) => boardController.updateBoard(req, res));
+app.delete('/api/boards/:id', authMiddleware, (req, res) => boardController.deleteBoard(req, res));
+
+
 
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
