@@ -12,13 +12,15 @@ export const useUserStore = create <UserState>((set) => ({
     user: null,
     token: null,
     setUser: (user, token) => {
-        localStorage.setItem('token', token);
+        if (typeof window !== 'undefined')
+            localStorage.setItem('token', token);
         set({ user, token});
 
     },
 
     logout: () => {
-        localStorage.removeItem('token');
+        if (typeof window !== 'undefined')
+            localStorage.removeItem('token');
         set({ user: null, token: null});
     },
 }));

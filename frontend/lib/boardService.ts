@@ -1,5 +1,6 @@
 import api from './api';
 import { Board, CreateBoardInput, UpdateBoardInput } from '@/types/board';
+import { Element } from '@/types/element';
 
 export const boardService = {
   async getBoards(): Promise<Board[]> {
@@ -24,5 +25,10 @@ export const boardService = {
 
   async deleteBoard(id: string): Promise<void> {
     await api.delete(`/api/boards/${id}`);
+  },
+
+  async getBoardElements(boardId: string): Promise<Element[]> {
+    const response = await api.get(`/api/boards/${boardId}/elements`);
+    return response.data;
   },
 };
