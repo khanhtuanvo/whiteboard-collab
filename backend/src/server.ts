@@ -5,10 +5,10 @@ import http from 'http';
 import { Server } from 'socket.io';
 import prisma from './config/database';
 import redis from './config/redis';
-import { timeStamp } from 'console';
 import { AuthController } from './controllers/auth.controller';
 import { authMiddleware } from './middleware/auth.middleware';
 import { BoardController } from './controllers/board.controller';
+import { setupSocketHandlers } from './websocket/socket.handler';
 
 
 dotenv.config();
@@ -29,12 +29,21 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json());
 
+// Request logger
+app.use((req, res, next) => {
+    const start = Date.now();
+    res.on('finish', () => {
+        console.log(`[${req.method}] ${req.path} → ${res.statusCode} in ${Date.now() - start}ms`);
+    });
+    next();
+});
+
 //Controllers
 const authController = new AuthController();
 const boardController = new BoardController();
 
 
-app.get('/health', async (req, res) => {
+app.get('/health', async (_req, res) => {
     try {
         //Test db connection
         await prisma.$queryRaw`SELECT 1`;
@@ -70,18 +79,19 @@ app.get('/api/test-protected', authMiddleware, (req, res) => {
 // Board routes (protected)
 app.get('/api/boards', authMiddleware, (req, res) => boardController.getBoards(req, res));
 app.get('/api/boards/:id', authMiddleware, (req, res) => boardController.getBoard(req, res));
+app.get('/api/boards/:id/elements', authMiddleware, (req, res) => boardController.getBoardElements(req, res));
 app.post('/api/boards', authMiddleware, (req, res) => boardController.createBoard(req, res));
 app.patch('/api/boards/:id', authMiddleware, (req, res) => boardController.updateBoard(req, res));
 app.delete('/api/boards/:id', authMiddleware, (req, res) => boardController.deleteBoard(req, res));
 
+// Wire up all Socket.io handlers (auth, board, cursor, element events)
+setupSocketHandlers(io);
 
-
-io.on('connection', (socket) => {
-    console.log('User connected:', socket.id);
-    socket.on('disconnect', () => {
-        console.log('User disconnected', socket.id);
-    })
-})
+// Global error handler — must be last middleware, catches any unhandled errors
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error('[Error]', err.stack ?? err.message);
+    res.status(500).json({ error: 'Internal server error' });
+});
 
 const PORT = process.env.PORT || 4000;
 

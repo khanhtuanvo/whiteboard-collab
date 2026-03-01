@@ -85,6 +85,26 @@ export class BoardService {
         return updatedBoard;
     }
 
+    async getBoardElements(boardId: string, userId: string) {
+        const board = await prisma.board.findFirst({
+            where: {
+                id: boardId,
+                OR: [
+                    { ownerId: userId },
+                    { collaborators: { some: { userId } } },
+                    { isPublic: true }
+                ]
+            }
+        });
+        if (!board) {
+            throw new Error('Board not found or access denied');
+        }
+        return prisma.element.findMany({
+            where: { boardId },
+            orderBy: { zIndex: 'asc' }
+        });
+    }
+
     async deleteBoard(boardId: string, userId:string){
         const board = await prisma.board.findFirst({
             where: {

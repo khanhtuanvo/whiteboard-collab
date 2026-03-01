@@ -73,6 +73,18 @@ export class BoardController {
     }
   }
 
+  async getBoardElements(req: Request, res: Response) {
+    try {
+      const id = req.params.id as string;
+      const userId = (req as any).userId;
+      const elements = await boardService.getBoardElements(id, userId);
+      res.json(elements);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      res.status(404).json({ error: message });
+    }
+  }
+
   async deleteBoard(req: Request, res: Response) {
     try {
       const id = req.params.id as string;
