@@ -1,8 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import * as fabric from 'fabric';
 import { Element, ElementType } from '@/types/element';
+
+const HEADER_HEIGHT = 64;
 
 interface CanvasProps {
   boardId: string;
@@ -23,260 +25,269 @@ export default function Canvas({
 }: CanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fabricCanvasRef = useRef<fabric.Canvas | null>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null);
 
-  // Initialize Fabric.js canvas
+  // Use refs for drawing state so handlers never go stale
+  const isDrawingRef = useRef(false);
+  const drawStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  // Keep latest prop values accessible in stable callbacks
+  const selectedToolRef = useRef(selectedTool);
+  const elementsRef = useRef(elements);
+  const onElementCreateRef = useRef(onElementCreate);
+  const onElementUpdateRef = useRef(onElementUpdate);
+
+  useEffect(() => { selectedToolRef.current = selectedTool; }, [selectedTool]);
+  useEffect(() => { elementsRef.current = elements; }, [elements]);
+  useEffect(() => { onElementCreateRef.current = onElementCreate; }, [onElementCreate]);
+  useEffect(() => { onElementUpdateRef.current = onElementUpdate; }, [onElementUpdate]);
+
+  // ─── Create a Fabric object from element data ───────────────────────────────
+  const createFabricObject = useCallback((element: Element): fabric.Object | null => {
+    const { type, properties } = element;
+
+    const base = {
+      // Store element ID on the fabric object for later lookup
+      data: { elementId: element.id },
+    };
+
+    switch (type) {
+      case ElementType.RECTANGLE:
+        return new fabric.Rect({
+          ...base,
+          left: properties.x,
+          top: properties.y,
+          width: properties.width ?? 100,
+          height: properties.height ?? 100,
+          fill: properties.fill ?? '#3b82f6',
+          stroke: properties.stroke,
+          strokeWidth: properties.strokeWidth ?? 0,
+        });
+
+      case ElementType.CIRCLE:
+        return new fabric.Circle({
+          ...base,
+          left: properties.x,
+          top: properties.y,
+          radius: properties.radius ?? 50,
+          fill: properties.fill ?? '#10b981',
+          stroke: properties.stroke,
+          strokeWidth: properties.strokeWidth ?? 0,
+        });
+
+      case ElementType.TEXT:
+        return new fabric.IText(properties.text ?? 'Text', {
+          ...base,
+          left: properties.x,
+          top: properties.y,
+          fontSize: properties.fontSize ?? 20,
+          fill: properties.color ?? '#000000',
+        });
+
+      case ElementType.STICKY_NOTE: {
+        const w = properties.width ?? 200;
+        const h = properties.height ?? 200;
+        return new fabric.Group(
+          [
+            new fabric.Rect({
+              width: w,
+              height: h,
+              fill: properties.color ?? '#fef08a',
+              stroke: '#ca8a04',
+              strokeWidth: 1,
+            }),
+            new fabric.IText(properties.text ?? 'Note', {
+              fontSize: 16,
+              fill: '#000000',
+              width: w - 20,
+              top: 10,
+              left: 10,
+            }),
+          ],
+          { ...base, left: properties.x, top: properties.y }
+        );
+      }
+
+      default:
+        return null;
+    }
+  }, []);
+
+  // ─── Stable mouse handlers (read state from refs, never stale) ──────────────
+  const handleMouseDown = useCallback((e: fabric.TPointerEventInfo) => {
+    if (selectedToolRef.current === 'select') return;
+    const pointer = fabricCanvasRef.current?.getScenePoint(e.e);
+    if (!pointer) return;
+    isDrawingRef.current = true;
+    drawStartRef.current = { x: pointer.x, y: pointer.y };
+  }, []);
+
+  const handleMouseUp = useCallback((e: fabric.TPointerEventInfo) => {
+    if (!isDrawingRef.current || !drawStartRef.current) return;
+
+    const pointer = fabricCanvasRef.current?.getScenePoint(e.e);
+    if (!pointer) return;
+
+    const start = drawStartRef.current;
+    const w = Math.abs(pointer.x - start.x);
+    const h = Math.abs(pointer.y - start.y);
+    const x = Math.min(start.x, pointer.x);
+    const y = Math.min(start.y, pointer.y);
+    const tool = selectedToolRef.current;
+
+    // Ignore accidental single clicks with no drag
+    if (w < 2 && h < 2 && tool !== 'text' && tool !== 'sticky_note') {
+      isDrawingRef.current = false;
+      drawStartRef.current = null;
+      return;
+    }
+
+    let elementData: Partial<Element>;
+
+    switch (tool) {
+      case 'rectangle':
+        elementData = {
+          boardId,
+          type: ElementType.RECTANGLE,
+          properties: { x, y, width: w, height: h, fill: '#3b82f6' },
+          zIndex: 0,
+        };
+        break;
+
+      case 'circle':
+        elementData = {
+          boardId,
+          type: ElementType.CIRCLE,
+          properties: { x: start.x, y: start.y, radius: Math.max(w, h) / 2, fill: '#10b981' },
+          zIndex: 0,
+        };
+        break;
+
+      case 'text':
+        elementData = {
+          boardId,
+          type: ElementType.TEXT,
+          properties: { x: start.x, y: start.y, text: 'Double click to edit', fontSize: 20, color: '#000000' },
+          zIndex: 0,
+        };
+        break;
+
+      case 'sticky_note':
+        elementData = {
+          boardId,
+          type: ElementType.STICKY_NOTE,
+          properties: { x: start.x, y: start.y, width: 200, height: 200, text: 'New note', color: '#fef08a' },
+          zIndex: 0,
+        };
+        break;
+
+      default:
+        isDrawingRef.current = false;
+        drawStartRef.current = null;
+        return;
+    }
+
+    onElementCreateRef.current(elementData);
+    isDrawingRef.current = false;
+    drawStartRef.current = null;
+  }, [boardId]);
+
+  const handleObjectModified = useCallback((e: fabric.ModifiedEvent) => {
+    if (!e.target) return;
+    const obj = e.target;
+    const elementId = (obj as any).data?.elementId as string | undefined;
+    if (!elementId) return;
+
+    const element = elementsRef.current.find(el => el.id === elementId);
+    if (!element) return;
+
+    onElementUpdateRef.current(elementId, {
+      properties: {
+        ...element.properties,
+        x: obj.left ?? 0,
+        y: obj.top ?? 0,
+        width: obj.getScaledWidth(),
+        height: obj.getScaledHeight(),
+      },
+    });
+  }, []);
+
+  // ─── Init canvas once ────────────────────────────────────────────────────────
   useEffect(() => {
     if (!canvasRef.current) return;
 
     const canvas = new fabric.Canvas(canvasRef.current, {
       width: window.innerWidth,
-      height: window.innerHeight,
+      height: window.innerHeight - HEADER_HEIGHT,
       backgroundColor: '#ffffff',
     });
-
     fabricCanvasRef.current = canvas;
 
-    // Handle window resize
     const handleResize = () => {
       canvas.setDimensions({
         width: window.innerWidth,
-        height: window.innerHeight,
+        height: window.innerHeight - HEADER_HEIGHT,
       });
       canvas.renderAll();
     };
-
     window.addEventListener('resize', handleResize);
+
+    // Attach stable handlers once — they read from refs so never go stale
+    canvas.on('mouse:down', handleMouseDown);
+    canvas.on('mouse:up', handleMouseUp);
+    canvas.on('object:modified', handleObjectModified);
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      canvas.off('mouse:down', handleMouseDown);
+      canvas.off('mouse:up', handleMouseUp);
+      canvas.off('object:modified', handleObjectModified);
       canvas.dispose();
     };
-  }, []);
+  }, [handleMouseDown, handleMouseUp, handleObjectModified]);
 
-  // Load existing elements
+  // ─── Sync tool mode ──────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!fabricCanvasRef.current) return;
-
     const canvas = fabricCanvasRef.current;
-    canvas.clear();
+    if (!canvas) return;
+    const isSelect = selectedTool === 'select';
+    canvas.isDrawingMode = false;
+    canvas.selection = isSelect;
+    canvas.forEachObject(obj => { obj.selectable = isSelect; });
+    canvas.defaultCursor = isSelect ? 'default' : 'crosshair';
+    canvas.renderAll();
+  }, [selectedTool]);
 
-    elements.forEach((element) => {
-      const fabricObject = createFabricObject(element);
-      if (fabricObject) {
-        canvas.add(fabricObject);
+  // ─── Sync elements: diff instead of full clear+redraw ───────────────────────
+  useEffect(() => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas) return;
+
+    const existingObjects = canvas.getObjects();
+
+    // Build a map of elementId → fabric object for existing objects
+    const existingMap = new Map<string, fabric.Object>();
+    existingObjects.forEach(obj => {
+      const id = (obj as any).data?.elementId;
+      if (id) existingMap.set(id, obj);
+    });
+
+    const incomingIds = new Set(elements.map(el => el.id));
+
+    // Remove objects no longer in elements
+    existingMap.forEach((obj, id) => {
+      if (!incomingIds.has(id)) canvas.remove(obj);
+    });
+
+    // Add new elements that don't have a fabric object yet
+    elements.forEach(el => {
+      if (!existingMap.has(el.id)) {
+        const obj = createFabricObject(el);
+        if (obj) canvas.add(obj);
       }
     });
 
     canvas.renderAll();
-  }, [elements]);
-
-  // Handle tool changes and drawing
-  useEffect(() => {
-    if (!fabricCanvasRef.current) return;
-
-    const canvas = fabricCanvasRef.current;
-
-    if (selectedTool === 'select') {
-      canvas.isDrawingMode = false;
-      canvas.selection = true;
-      canvas.forEachObject((obj) => {
-        obj.selectable = true;
-      });
-    } else {
-      canvas.isDrawingMode = false;
-      canvas.selection = false;
-      canvas.forEachObject((obj) => {
-        obj.selectable = false;
-      });
-    }
-  }, [selectedTool]);
-
-  // Create Fabric object from element data
-  const createFabricObject = (element: Element): fabric.Object | null => {
-    const { type, properties } = element;
-
-    switch (type) {
-      case ElementType.RECTANGLE:
-        return new fabric.Rect({
-          left: properties.x,
-          top: properties.y,
-          width: properties.width || 100,
-          height: properties.height || 100,
-          fill: properties.fill || '#3b82f6',
-          stroke: properties.stroke,
-          strokeWidth: properties.strokeWidth || 0,
-        });
-
-      case ElementType.CIRCLE:
-        return new fabric.Circle({
-          left: properties.x,
-          top: properties.y,
-          radius: properties.radius || 50,
-          fill: properties.fill || '#10b981',
-          stroke: properties.stroke,
-          strokeWidth: properties.strokeWidth || 0,
-        });
-
-      case ElementType.TEXT:
-        return new fabric.Text(properties.text || 'Text', {
-          left: properties.x,
-          top: properties.y,
-          fontSize: properties.fontSize || 20,
-          fill: properties.color || '#000000',
-        });
-
-      case ElementType.STICKY_NOTE:
-        const group = new fabric.Group(
-          [
-            new fabric.Rect({
-              width: properties.width || 200,
-              height: properties.height || 200,
-              fill: properties.color || '#fef08a',
-              stroke: '#ca8a04',
-              strokeWidth: 1,
-            }),
-            new fabric.Text(properties.text || 'Note', {
-              fontSize: 16,
-              fill: '#000000',
-              width: (properties.width || 200) - 20,
-              top: 10,
-              left: 10,
-            }),
-          ],
-          {
-            left: properties.x,
-            top: properties.y,
-          }
-        );
-        return group;
-
-      default:
-        return null;
-    }
-  };
-
-  // Handle mouse down for drawing
-  const handleMouseDown = (e: fabric.TPointerEventInfo) => {
-    if (selectedTool === 'select') return;
-
-    const pointer = fabricCanvasRef.current?.getScenePoint(e.e);
-    if (!pointer) return;
-
-    setIsDrawing(true);
-    setDrawStart({ x: pointer.x, y: pointer.y });
-  };
-
-  // Handle mouse up for drawing
-  const handleMouseUp = (e: fabric.TPointerEventInfo) => {
-    if (!isDrawing || !drawStart) return;
-
-    const pointer = fabricCanvasRef.current?.getScenePoint(e.e);
-    if (!pointer) return;
-
-    const width = Math.abs(pointer.x - drawStart.x);
-    const height = Math.abs(pointer.y - drawStart.y);
-
-    let elementData: Partial<Element> = {
-      boardId,
-      type: ElementType.RECTANGLE,
-      properties: {
-        x: Math.min(drawStart.x, pointer.x),
-        y: Math.min(drawStart.y, pointer.y),
-        width,
-        height,
-      },
-      zIndex: 0,
-    };
-
-    switch (selectedTool) {
-      case 'rectangle':
-        elementData.type = ElementType.RECTANGLE;
-        elementData.properties = {
-          ...elementData.properties,
-          fill: '#3b82f6',
-        };
-        break;
-
-      case 'circle':
-        elementData.type = ElementType.CIRCLE;
-        elementData.properties = {
-          x: drawStart.x,
-          y: drawStart.y,
-          radius: Math.max(width, height) / 2,
-          fill: '#10b981',
-        };
-        break;
-
-      case 'text':
-        elementData.type = ElementType.TEXT;
-        elementData.properties = {
-          x: drawStart.x,
-          y: drawStart.y,
-          text: 'Double click to edit',
-          fontSize: 20,
-          color: '#000000',
-        };
-        break;
-
-      case 'sticky_note':
-        elementData.type = ElementType.STICKY_NOTE;
-        elementData.properties = {
-          x: drawStart.x,
-          y: drawStart.y,
-          width: 200,
-          height: 200,
-          text: 'New note',
-          color: '#fef08a',
-        };
-        break;
-    }
-
-    onElementCreate(elementData);
-
-    setIsDrawing(false);
-    setDrawStart(null);
-  };
-
-  // Attach event listeners
-  useEffect(() => {
-    if (!fabricCanvasRef.current) return;
-
-    const canvas = fabricCanvasRef.current;
-
-    canvas.on('mouse:down', handleMouseDown);
-    canvas.on('mouse:up', handleMouseUp);
-
-    // Handle object modifications
-    canvas.on('object:modified', (e) => {
-      if (!e.target) return;
-
-      const obj = e.target;
-      const element = elements.find((el) => {
-        // Match object to element (you'll need to add IDs to objects)
-        return true; // Simplified for now
-      });
-
-      if (element) {
-        onElementUpdate(element.id, {
-          properties: {
-            ...element.properties,
-            x: obj.left || 0,
-            y: obj.top || 0,
-            width: obj.width,
-            height: obj.height,
-          },
-        });
-      }
-    });
-
-    return () => {
-      canvas.off('mouse:down');
-      canvas.off('mouse:up');
-      canvas.off('object:modified');
-    };
-  }, [selectedTool, elements, isDrawing, drawStart]);
+  }, [elements, createFabricObject]);
 
   return (
     <div className="relative w-full h-full">
