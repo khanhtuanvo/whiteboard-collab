@@ -14,6 +14,7 @@ import { Element, ElementType } from '@/types/element';
 import Toolbar from '@/components/board/Toolbar';
 import Cursor from '@/components/board/Cursor';
 import ColorPicker from '@/components/board/ColorPicker';
+import ConnectionBanner from '@/components/board/ConnectionBanner';
 import type { CanvasHandle, CanvasProps } from '@/components/board/Canvas';
 
 // Dynamic import to avoid SSR issues with Fabric.js
@@ -299,6 +300,9 @@ export default function BoardPage() {
           />
         </div>
       )}
+
+      {/* Reconnection banner */}
+      <ConnectionBanner boardId={boardId} />
 
       {/* Canvas — wrapping div captures mouse for cursor broadcasting */}
       <div
