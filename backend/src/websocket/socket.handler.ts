@@ -73,6 +73,20 @@ export function setupSocketHandlers(io: Server) {
       });
     });
 
+    socket.on('element:undo', (data) => {
+      elementEvents.handleUndo(socket, io, {
+        ...data,
+        userId
+      });
+    });
+
+    socket.on('element:redo', (data) => {
+      elementEvents.handleRedo(socket, io, {
+        ...data,
+        userId
+      });
+    });
+
     // Handle disconnect
     socket.on('disconnect', async () => {
       console.log(`🔌 User ${userId} disconnected (socket: ${socket.id})`);
