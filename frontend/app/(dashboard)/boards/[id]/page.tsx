@@ -43,6 +43,7 @@ export default function BoardPage() {
   const setElements = useBoardStore((state) => state.setElements);
   const updateElement = useBoardStore((state) => state.updateElement);
   const removeElement = useBoardStore((state) => state.removeElement);
+  const clearElements = useBoardStore((state) => state.clearElements);
   const applyRemoteChange = useBoardStore((state) => state.applyRemoteChange);
   const setActiveUsers = useBoardStore((state) => state.setActiveUsers);
   const addActiveUser = useBoardStore((state) => state.addActiveUser);
@@ -82,6 +83,7 @@ export default function BoardPage() {
   );
   const handleElementDeleted = useCallback((id: string) => removeElement(id), [removeElement]);
   const handleSnapshot = useCallback((els: Element[]) => setElements(els), [setElements]);
+  const handleBoardCleared = useCallback(() => clearElements(), [clearElements]);
   const handleActiveUsers = useCallback(
     (users: Parameters<typeof setActiveUsers>[0]) => setActiveUsers(users),
     [setActiveUsers]
@@ -96,7 +98,7 @@ export default function BoardPage() {
     [updateUserCursor]
   );
 
-  const { emitCursorMove, emitCreateElement, emitUpdateElement, emitDeleteElement, emitUndo, emitRedo } =
+  const { emitCursorMove, emitCreateElement, emitUpdateElement, emitDeleteElement, emitUndo, emitRedo, emitClearBoard } =
     useWebSocket({
       boardId,
       userName: user?.name ?? '',
@@ -109,6 +111,7 @@ export default function BoardPage() {
       onUserJoined: handleUserJoined,
       onUserLeft: handleUserLeft,
       onCursorUpdate: handleCursorUpdate,
+      onBoardCleared: handleBoardCleared,
     });
 
   const { undo, redo, recordAction, canUndo, canRedo } = useHistory({
@@ -184,13 +187,19 @@ export default function BoardPage() {
 
   const handleElementDelete = useCallback(
     (id: string) => {
+      // Optimistic removal: remove immediately so the canvas updates without
+      // waiting for the server round-trip, making delete feel instant.
+      removeElement(id);
       emitDeleteElement(id);
-      // Clear selection if the deleted element was selected
       setSelectedElementId(prev => (prev === id ? null : prev));
       recordAction();
     },
-    [emitDeleteElement, recordAction]
+    [removeElement, emitDeleteElement, recordAction]
   );
+
+  const handleClearAll = useCallback(() => {
+    emitClearBoard();
+  }, [emitClearBoard]);
 
   // ─── Color change from ColorPicker ──────────────────────────────────────────
   const handleColorChange = useCallback(
@@ -275,6 +284,8 @@ export default function BoardPage() {
           onElementUpdate={handleElementUpdate}
           zoomLevel={zoomLevel}
           elements={elements}
+          onClearAll={handleClearAll}
+          onDeleteSelected={() => canvasRef.current?.deleteSelected()}
         />
       </div>
 

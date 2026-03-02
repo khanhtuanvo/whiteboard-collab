@@ -17,6 +17,7 @@ interface UseWebSocketOptions {
   onUserJoined: (user: Omit<ActiveUser, 'cursor' | 'lastSeen'>) => void;
   onUserLeft: (userId: string) => void;
   onCursorUpdate: (userId: string, x: number, y: number) => void;
+  onBoardCleared?: () => void;
 }
 
 export function useWebSocket({
@@ -31,6 +32,7 @@ export function useWebSocket({
   onUserJoined,
   onUserLeft,
   onCursorUpdate,
+  onBoardCleared,
 }: UseWebSocketOptions) {
   // Keep callbacks in refs so the effect never needs to re-run when they change
   const onElementCreatedRef = useRef(onElementCreated);
@@ -41,6 +43,7 @@ export function useWebSocket({
   const onUserJoinedRef = useRef(onUserJoined);
   const onUserLeftRef = useRef(onUserLeft);
   const onCursorUpdateRef = useRef(onCursorUpdate);
+  const onBoardClearedRef = useRef(onBoardCleared);
 
   useEffect(() => { onElementCreatedRef.current = onElementCreated; });
   useEffect(() => { onElementUpdatedRef.current = onElementUpdated; });
@@ -50,6 +53,7 @@ export function useWebSocket({
   useEffect(() => { onUserJoinedRef.current = onUserJoined; });
   useEffect(() => { onUserLeftRef.current = onUserLeft; });
   useEffect(() => { onCursorUpdateRef.current = onCursorUpdate; });
+  useEffect(() => { onBoardClearedRef.current = onBoardCleared; });
 
   useEffect(() => {
     // Don't connect if user isn't authenticated yet
@@ -93,6 +97,10 @@ export function useWebSocket({
       onSnapshotRef.current(elements);
     };
 
+    const handleBoardCleared = () => {
+      onBoardClearedRef.current?.();
+    };
+
     socket.on('board:active_users', handleActiveUsers);
     socket.on('user:joined', handleUserJoined);
     socket.on('user:left', handleUserLeft);
@@ -101,6 +109,7 @@ export function useWebSocket({
     socket.on('element:updated', handleElementUpdated);
     socket.on('element:deleted', handleElementDeleted);
     socket.on('element:snapshot', handleSnapshot);
+    socket.on('board:cleared', handleBoardCleared);
 
     return () => {
       socket.emit('board:leave', { boardId });
@@ -112,6 +121,7 @@ export function useWebSocket({
       socket.off('element:updated', handleElementUpdated);
       socket.off('element:deleted', handleElementDeleted);
       socket.off('element:snapshot', handleSnapshot);
+      socket.off('board:cleared', handleBoardCleared);
     };
   }, [boardId, userName, userColor]);
 
@@ -139,5 +149,9 @@ export function useWebSocket({
     getSocket().emit('element:redo', { boardId });
   }, [boardId]);
 
-  return { emitCursorMove, emitCreateElement, emitUpdateElement, emitDeleteElement, emitUndo, emitRedo };
+  const emitClearBoard = useCallback(() => {
+    getSocket().emit('board:clear', { boardId });
+  }, [boardId]);
+
+  return { emitCursorMove, emitCreateElement, emitUpdateElement, emitDeleteElement, emitUndo, emitRedo, emitClearBoard };
 }

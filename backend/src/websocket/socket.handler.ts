@@ -87,6 +87,13 @@ export function setupSocketHandlers(io: Server) {
       });
     });
 
+    socket.on('board:clear', (data) => {
+      elementEvents.handleClearBoard(socket, io, {
+        ...data,
+        userId,
+      });
+    });
+
     // Handle disconnect
     socket.on('disconnect', async () => {
       console.log(`🔌 User ${userId} disconnected (socket: ${socket.id})`);

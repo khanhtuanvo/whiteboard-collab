@@ -342,6 +342,28 @@ export class ElementEvents {
     }
   }
 
+  // ─── Clear board ─────────────────────────────────────────────────────────────
+
+  async handleClearBoard(socket: Socket, io: any, data: { boardId: string; userId: string }) {
+    const { boardId, userId } = data;
+    try {
+      const hasAccess = await this.checkBoardAccess(boardId, userId, 'EDITOR');
+      if (!hasAccess) {
+        socket.emit('error', { message: 'Permission denied' });
+        return;
+      }
+
+      await this.saveSnapshot(boardId);
+      await prisma.element.deleteMany({ where: { boardId } });
+
+      io.to(`board:${boardId}`).emit('board:cleared');
+      console.log(`🗑️  Board ${boardId} cleared by ${userId}`);
+    } catch (error) {
+      console.error('Error clearing board:', error);
+      socket.emit('error', { message: 'Failed to clear board' });
+    }
+  }
+
   // ─── Access control ──────────────────────────────────────────────────────────
 
   private async checkBoardAccess(

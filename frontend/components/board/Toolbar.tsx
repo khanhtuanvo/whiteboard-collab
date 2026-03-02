@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import {
@@ -15,6 +16,7 @@ import {
   Trash2,
   BringToFront,
   SendToBack,
+  Eraser,
 } from 'lucide-react';
 import { Element, ElementType } from '@/types/element';
 
@@ -33,6 +35,9 @@ interface ToolbarProps {
   onElementUpdate?: (id: string, updates: Partial<Element>) => void;
   zoomLevel?: number;
   elements?: Element[];
+  // Phase 1.6 additions
+  onClearAll?: () => void;
+  onDeleteSelected?: () => void;
 }
 
 const STROKE_WIDTHS = [1, 3, 6];
@@ -52,7 +57,10 @@ export default function Toolbar({
   onElementUpdate,
   zoomLevel,
   elements = [],
+  onClearAll,
+  onDeleteSelected,
 }: ToolbarProps) {
+  const [clearConfirm, setClearConfirm] = useState(false);
   const tools = [
     { id: 'select', icon: MousePointer2, label: 'Select' },
     { id: 'rectangle', icon: Square, label: 'Rectangle' },
@@ -165,11 +173,11 @@ export default function Toolbar({
             <SendToBack className="h-4 w-4" />
           </Button>
 
-          {/* Delete */}
+          {/* Delete — uses deleteSelected() so multi-select works correctly */}
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => onElementDelete?.(selectedElement.id)}
+            onClick={() => onDeleteSelected ? onDeleteSelected() : onElementDelete?.(selectedElement.id)}
             title="Delete (Del)"
             className="text-red-500 hover:text-red-700 hover:bg-red-50"
           >
@@ -183,6 +191,44 @@ export default function Toolbar({
       <span className="text-xs text-gray-500 min-w-[3rem] text-center" title="Zoom level">
         {zoomPercent}%
       </span>
+
+      {/* Clear All */}
+      <Separator orientation="vertical" className="h-6" />
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => setClearConfirm(true)}
+        title="Clear All"
+        className="text-red-500 hover:text-red-700 hover:bg-red-50"
+      >
+        <Eraser className="h-4 w-4" />
+      </Button>
+
+      {/* Confirmation dialog */}
+      {clearConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-80">
+            <h2 className="text-base font-semibold mb-2">Clear all elements?</h2>
+            <p className="text-sm text-gray-500 mb-4">
+              This will permanently delete every element on the board for all collaborators.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                className="px-4 py-2 text-sm rounded border hover:bg-gray-50"
+                onClick={() => setClearConfirm(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-4 py-2 text-sm rounded bg-red-600 text-white hover:bg-red-700"
+                onClick={() => { onClearAll?.(); setClearConfirm(false); }}
+              >
+                Clear All
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
