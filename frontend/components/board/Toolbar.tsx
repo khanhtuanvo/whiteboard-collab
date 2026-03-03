@@ -9,6 +9,9 @@ import {
   Circle,
   Type,
   StickyNote,
+  Pencil,
+  Minus,
+  MoveRight,
   Undo2,
   Redo2,
   Download,
@@ -26,6 +29,7 @@ interface ToolbarProps {
   onUndo: () => void;
   onRedo: () => void;
   onExport: () => void;
+  onExportSVG?: () => void;
   onShare: () => void;
   canUndo: boolean;
   canRedo: boolean;
@@ -49,6 +53,7 @@ export default function Toolbar({
   onUndo,
   onRedo,
   onExport,
+  onExportSVG,
   onShare,
   canUndo,
   canRedo,
@@ -67,6 +72,9 @@ export default function Toolbar({
     { id: 'circle', icon: Circle, label: 'Circle' },
     { id: 'text', icon: Type, label: 'Text' },
     { id: 'sticky_note', icon: StickyNote, label: 'Sticky Note' },
+    { id: 'pen', icon: Pencil, label: 'Pen (freehand)' },
+    { id: 'line', icon: Minus, label: 'Line' },
+    { id: 'arrow', icon: MoveRight, label: 'Arrow' },
   ];
 
   const isTextType = selectedElement?.type === ElementType.TEXT || selectedElement?.type === ElementType.STICKY_NOTE;
@@ -117,6 +125,11 @@ export default function Toolbar({
       <Button variant="ghost" size="sm" onClick={onExport} title="Export as PNG">
         <Download className="h-4 w-4" />
       </Button>
+      {onExportSVG && (
+        <Button variant="ghost" size="sm" onClick={onExportSVG} title="Export as SVG">
+          <span className="text-xs font-bold">SVG</span>
+        </Button>
+      )}
       <Button variant="ghost" size="sm" onClick={onShare} title="Share">
         <Share2 className="h-4 w-4" />
       </Button>

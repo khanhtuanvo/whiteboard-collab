@@ -52,6 +52,12 @@ export default function BoardPage() {
   const updateUserCursor = useBoardStore((state) => state.updateUserCursor);
   const reset = useBoardStore((state) => state.reset);
 
+  // Race-condition guard: buffer incoming socket events until the initial HTTP
+  // fetch has completed. Events that arrive before initialization are replayed
+  // afterward; events whose element ID already exists are skipped (dedup).
+  const isInitializedRef = useRef(false);
+  const pendingCreatesRef = useRef<Element[]>([]);
+
   const [board, setBoard] = useState<Board | null>(null);
   const [selectedTool, setSelectedTool] = useState<string>('select');
   const [loading, setLoading] = useState(true);
@@ -77,7 +83,14 @@ export default function BoardPage() {
   );
 
   // ─── Stable WebSocket callbacks ─────────────────────────────────────────────
-  const handleElementCreated = useCallback((el: Element) => applyRemoteChange(el), [applyRemoteChange]);
+  const handleElementCreated = useCallback((el: Element) => {
+    if (!isInitializedRef.current) {
+      // Buffer until the initial HTTP fetch completes
+      pendingCreatesRef.current.push(el);
+      return;
+    }
+    applyRemoteChange(el);
+  }, [applyRemoteChange]);
   const handleElementUpdated = useCallback(
     (id: string, properties: Record<string, unknown>) => updateElement(id, properties),
     [updateElement]
@@ -128,6 +141,8 @@ export default function BoardPage() {
       return;
     }
 
+    isInitializedRef.current = false;
+    pendingCreatesRef.current = [];
     reset();
 
     const load = async () => {
@@ -138,6 +153,15 @@ export default function BoardPage() {
         ]);
         setBoard(boardData);
         setElements(elementsData);
+
+        // Mark as initialized and replay any events that arrived during the fetch,
+        // skipping duplicates whose ID is already present in elementsData.
+        isInitializedRef.current = true;
+        const fetchedIds = new Set(elementsData.map((el: Element) => el.id));
+        for (const el of pendingCreatesRef.current) {
+          if (!fetchedIds.has(el.id)) applyRemoteChange(el);
+        }
+        pendingCreatesRef.current = [];
       } catch (err) {
         console.error('Failed to load board:', err);
         router.push('/boards');
@@ -227,6 +251,10 @@ export default function BoardPage() {
     canvasRef.current?.exportImage();
   }, []);
 
+  const handleExportSVG = useCallback(() => {
+    canvasRef.current?.exportSVG();
+  }, []);
+
   // ─── Share ───────────────────────────────────────────────────────────────────
   const handleShare = useCallback(async () => {
     if (!shareEmail.trim()) return;
@@ -277,6 +305,7 @@ export default function BoardPage() {
           onUndo={undo}
           onRedo={redo}
           onExport={handleExport}
+          onExportSVG={handleExportSVG}
           onShare={() => setShareOpen(true)}
           canUndo={canUndo}
           canRedo={canRedo}
@@ -316,7 +345,7 @@ export default function BoardPage() {
           onElementCreate={handleElementCreate}
           onElementUpdate={handleElementUpdate}
           onElementDelete={handleElementDelete}
-          selectedTool={selectedTool as 'select' | 'rectangle' | 'circle' | 'text' | 'sticky_note'}
+          selectedTool={selectedTool as 'select' | 'rectangle' | 'circle' | 'text' | 'sticky_note' | 'pen' | 'line' | 'arrow'}
           onSelectionChange={setSelectedElementId}
           onZoomChange={setZoomLevel}
         />

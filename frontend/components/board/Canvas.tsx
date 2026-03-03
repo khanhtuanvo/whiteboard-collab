@@ -20,6 +20,7 @@ function throttleFn<T extends (...args: any[]) => any>(fn: T, ms: number): T {
 
 export interface CanvasHandle {
   exportImage: () => void;
+  exportSVG: () => void;
   deleteSelected: () => void;
 }
 
@@ -29,7 +30,7 @@ export interface CanvasProps {
   onElementCreate: (element: Partial<Element>) => void;
   onElementUpdate: (id: string, updates: Partial<Element>) => void;
   onElementDelete: (id: string) => void;
-  selectedTool: 'select' | 'rectangle' | 'circle' | 'text' | 'sticky_note';
+  selectedTool: 'select' | 'rectangle' | 'circle' | 'text' | 'sticky_note' | 'pen' | 'line' | 'arrow';
   onSelectionChange?: (elementId: string | null) => void;
   onZoomChange?: (zoom: number) => void;
 }
@@ -146,6 +147,57 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
             }),
           ],
           { ...base, left: properties.x, top: properties.y }
+        );
+      }
+
+      case ElementType.LINE: {
+        if (properties.pathData) {
+          // Freehand pen path — path commands are in local coordinates
+          return new fabric.Path(JSON.parse(properties.pathData), {
+            ...base,
+            left: properties.x,
+            top: properties.y,
+            stroke: properties.stroke ?? '#000000',
+            strokeWidth: properties.strokeWidth ?? 3,
+            fill: '',
+          });
+        }
+        // Straight line stored as relative path "M 0 0 L dx dy"
+        const dx = (properties.x2 ?? properties.x + 100) - properties.x;
+        const dy = (properties.y2 ?? properties.y) - properties.y;
+        return new fabric.Path(`M 0 0 L ${dx} ${dy}`, {
+          ...base,
+          left: properties.x,
+          top: properties.y,
+          stroke: properties.stroke ?? '#000000',
+          strokeWidth: properties.strokeWidth ?? 2,
+          fill: '',
+          originX: 'left',
+          originY: 'top',
+        });
+      }
+
+      case ElementType.ARROW: {
+        const dx = (properties.x2 ?? properties.x + 100) - properties.x;
+        const dy = (properties.y2 ?? properties.y) - properties.y;
+        const angle = Math.atan2(dy, dx);
+        const arrowLen = 14;
+        const ax1 = dx - arrowLen * Math.cos(angle - Math.PI / 6);
+        const ay1 = dy - arrowLen * Math.sin(angle - Math.PI / 6);
+        const ax2 = dx - arrowLen * Math.cos(angle + Math.PI / 6);
+        const ay2 = dy - arrowLen * Math.sin(angle + Math.PI / 6);
+        return new fabric.Path(
+          `M 0 0 L ${dx} ${dy} M ${ax1} ${ay1} L ${dx} ${dy} L ${ax2} ${ay2}`,
+          {
+            ...base,
+            left: properties.x,
+            top: properties.y,
+            stroke: properties.stroke ?? '#000000',
+            strokeWidth: properties.strokeWidth ?? 2,
+            fill: '',
+            originX: 'left',
+            originY: 'top',
+          }
         );
       }
 
@@ -268,6 +320,24 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
           boardId: boardIdRef.current,
           type: ElementType.STICKY_NOTE,
           properties: { x: start.x, y: start.y, width: 200, height: 200, text: 'New note', color: '#fef08a' },
+          zIndex: 0,
+        };
+        break;
+
+      case 'line':
+        elementData = {
+          boardId: boardIdRef.current,
+          type: ElementType.LINE,
+          properties: { x: start.x, y: start.y, x2: pointer.x, y2: pointer.y, stroke: '#000000', strokeWidth: 2 },
+          zIndex: 0,
+        };
+        break;
+
+      case 'arrow':
+        elementData = {
+          boardId: boardIdRef.current,
+          type: ElementType.ARROW,
+          properties: { x: start.x, y: start.y, x2: pointer.x, y2: pointer.y, stroke: '#000000', strokeWidth: 2 },
           zIndex: 0,
         };
         break;
@@ -547,6 +617,28 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       }
     };
 
+    // Freehand pen: capture completed path and broadcast it as a LINE element
+    const handlePathCreated = (e: any) => {
+      const path = e.path as fabric.Path;
+      if (!path || selectedToolRef.current !== 'pen') return;
+      // Remove the fabric-managed path — the server round-trip will add it back
+      canvas.remove(path);
+      canvas.renderAll();
+      const bounds = path.getBoundingRect();
+      onElementCreateRef.current({
+        boardId: boardIdRef.current,
+        type: ElementType.LINE,
+        properties: {
+          x: bounds.left,
+          y: bounds.top,
+          pathData: JSON.stringify((path as any).path),
+          stroke: (canvas.freeDrawingBrush as any)?.color ?? '#000000',
+          strokeWidth: (canvas.freeDrawingBrush as any)?.width ?? 3,
+        },
+        zIndex: 0,
+      });
+    };
+
     canvas.on('mouse:down', handleMouseDown);
     canvas.on('mouse:move', handleMouseMove);
     canvas.on('mouse:up', handleMouseUp);
@@ -557,6 +649,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     canvas.on('selection:created', handleSelectionCreated);
     canvas.on('selection:updated', handleSelectionUpdated);
     canvas.on('selection:cleared', handleSelectionCleared);
+    canvas.on('path:created', handlePathCreated);
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
 
@@ -574,6 +667,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       canvas.off('selection:created', handleSelectionCreated);
       canvas.off('selection:updated', handleSelectionUpdated);
       canvas.off('selection:cleared', handleSelectionCleared);
+      canvas.off('path:created', handlePathCreated);
       canvas.dispose();
     };
   }, [handleMouseDown, handleMouseMove, handleMouseUp, handleObjectModified]);
@@ -583,7 +677,15 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
     const isSelect = selectedTool === 'select';
-    canvas.isDrawingMode = false;
+    const isPen = selectedTool === 'pen';
+    // Enable Fabric's drawing mode only for the pen tool
+    canvas.isDrawingMode = isPen;
+    if (isPen) {
+      const brush = new fabric.PencilBrush(canvas);
+      brush.width = 3;
+      brush.color = '#000000';
+      canvas.freeDrawingBrush = brush;
+    }
     // Marquee (rubber-band) selection only active in select mode
     canvas.selection = isSelect;
     // Objects are always individually selectable regardless of tool
@@ -622,7 +724,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         const obj = createFabricObject(el);
         if (obj) canvas.add(obj);
       } else {
-        // Apply style updates without recreating the object
+        // Apply style + position updates without recreating the object
         const p = el.properties;
 
         // For sticky notes (Group), the background color lives on the inner Rect,
@@ -635,6 +737,9 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
           const newFill = p.fill ?? p.color;
           if (innerRect && newFill !== undefined) innerRect.set('fill', newFill);
           if (p.strokeWidth !== undefined) innerRect?.set('strokeWidth', p.strokeWidth);
+          // Position sync for groups (moved by remote user)
+          if (p.x !== undefined) existing.set('left', p.x);
+          if (p.y !== undefined) existing.set('top', p.y);
         } else {
           if (p.fill !== undefined) existing.set('fill', p.fill);
           if (p.stroke !== undefined) existing.set('stroke', p.stroke);
@@ -642,6 +747,9 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
           if (p.fontSize !== undefined && (existing as any).fontSize !== undefined) {
             (existing as any).set('fontSize', p.fontSize);
           }
+          // Position sync for all non-group objects (moved by remote user)
+          if (p.x !== undefined) existing.set('left', p.x);
+          if (p.y !== undefined) existing.set('top', p.y);
         }
       }
     });
@@ -658,6 +766,18 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       link.href = dataURL;
       link.download = 'whiteboard.png';
       link.click();
+    },
+    exportSVG() {
+      const canvas = fabricCanvasRef.current;
+      if (!canvas) return;
+      const svg = canvas.toSVG();
+      const blob = new Blob([svg], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'whiteboard.svg';
+      link.click();
+      URL.revokeObjectURL(url);
     },
     deleteSelected() {
       const canvas = fabricCanvasRef.current;
