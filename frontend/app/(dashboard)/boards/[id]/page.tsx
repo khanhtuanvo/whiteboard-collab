@@ -293,8 +293,36 @@ export default function BoardPage() {
   return (
     <div className="h-screen w-screen relative overflow-hidden">
       {/* Header */}
-      <div className="absolute top-0 left-0 right-0 h-16 bg-white border-b z-10 flex items-center px-4">
-        <h1 className="text-xl font-semibold">{board.title}</h1>
+      <div className="absolute top-0 left-0 right-0 h-16 bg-white border-b z-10 flex items-center px-4 gap-4">
+        <h1 className="text-xl font-semibold flex-1 truncate">{board.title}</h1>
+
+        {/* Active users avatar stack */}
+        <div className="flex items-center">
+          {activeUsers.slice(0, 5).map((u, i) => (
+            <div
+              key={u.userId}
+              title={u.userName}
+              className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white shadow-sm select-none cursor-default"
+              style={{
+                backgroundColor: u.userColor,
+                marginLeft: i === 0 ? 0 : '-0.5rem',
+                zIndex: 5 - i,
+                position: 'relative',
+              }}
+            >
+              {u.userName.charAt(0).toUpperCase()}
+            </div>
+          ))}
+          {activeUsers.length > 5 && (
+            <span
+              className="w-8 h-8 rounded-full flex items-center justify-center bg-gray-200 text-gray-600 text-xs font-bold border-2 border-white shadow-sm -ml-2 select-none"
+              title={activeUsers.slice(5).map(u => u.userName).join(', ')}
+              style={{ position: 'relative', zIndex: 0 }}
+            >
+              +{activeUsers.length - 5}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Toolbar — centered at the top */}

@@ -101,9 +101,16 @@ export function useWebSocket({
       onBoardClearedRef.current?.();
     };
 
+    // room:users carries the full active-user list; replaces the piecemeal
+    // board:active_users / user:joined / user:left trio for presence sync.
+    const handleRoomUsers = (users: ActiveUser[]) => {
+      onActiveUsersRef.current(users);
+    };
+
     socket.on('board:active_users', handleActiveUsers);
     socket.on('user:joined', handleUserJoined);
     socket.on('user:left', handleUserLeft);
+    socket.on('room:users', handleRoomUsers);
     socket.on('cursor:update', handleCursorUpdate);
     socket.on('element:created', handleElementCreated);
     socket.on('element:updated', handleElementUpdated);
@@ -116,6 +123,7 @@ export function useWebSocket({
       socket.off('board:active_users', handleActiveUsers);
       socket.off('user:joined', handleUserJoined);
       socket.off('user:left', handleUserLeft);
+      socket.off('room:users', handleRoomUsers);
       socket.off('cursor:update', handleCursorUpdate);
       socket.off('element:created', handleElementCreated);
       socket.off('element:updated', handleElementUpdated);
