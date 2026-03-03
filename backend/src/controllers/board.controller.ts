@@ -9,6 +9,11 @@ const createBoardSchema = z.object({
   isPublic: z.boolean().optional()
 });
 
+const addCollaboratorSchema = z.object({
+  email: z.string().email(),
+  role: z.enum(['VIEWER', 'EDITOR', 'ADMIN']).optional()
+});
+
 const updateBoardSchema = z.object({
   title: z.string().min(1).max(255).optional(),
   isPublic: z.boolean().optional(),
@@ -82,6 +87,22 @@ export class BoardController {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       res.status(404).json({ error: message });
+    }
+  }
+
+  async addCollaborator(req: Request, res: Response) {
+    try {
+      const boardId = req.params.id as string;
+      const ownerId = (req as any).userId;
+      const { email, role } = addCollaboratorSchema.parse(req.body);
+      const collaborator = await boardService.addCollaborator(boardId, ownerId, email, role as any);
+      res.status(201).json(collaborator);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: error.issues });
+      }
+      const message = error instanceof Error ? error.message : 'Something went wrong';
+      res.status(400).json({ error: message });
     }
   }
 

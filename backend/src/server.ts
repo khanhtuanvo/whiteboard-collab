@@ -83,6 +83,7 @@ app.get('/api/boards/:id/elements', authMiddleware, (req, res) => boardControlle
 app.post('/api/boards', authMiddleware, (req, res) => boardController.createBoard(req, res));
 app.patch('/api/boards/:id', authMiddleware, (req, res) => boardController.updateBoard(req, res));
 app.delete('/api/boards/:id', authMiddleware, (req, res) => boardController.deleteBoard(req, res));
+app.post('/api/boards/:id/collaborators', authMiddleware, (req, res) => boardController.addCollaborator(req, res));
 
 // Wire up all Socket.io handlers (auth, board, cursor, element events)
 setupSocketHandlers(io);

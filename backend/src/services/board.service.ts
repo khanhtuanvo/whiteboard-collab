@@ -105,6 +105,30 @@ export class BoardService {
         });
     }
 
+    async addCollaborator(boardId: string, ownerId: string, email: string, role: Role = Role.EDITOR) {
+        const board = await prisma.board.findFirst({
+            where: { id: boardId, ownerId }
+        });
+        if (!board) {
+            throw new Error('Board not found or only the owner can add collaborators');
+        }
+
+        const user = await prisma.user.findUnique({ where: { email } });
+        if (!user) {
+            throw new Error('User not found');
+        }
+
+        if (user.id === ownerId) {
+            throw new Error('Owner is already a member of the board');
+        }
+
+        return prisma.boardCollaborator.upsert({
+            where: { boardId_userId: { boardId, userId: user.id } },
+            create: { boardId, userId: user.id, role },
+            update: { role },
+        });
+    }
+
     async deleteBoard(boardId: string, userId:string){
         const board = await prisma.board.findFirst({
             where: {

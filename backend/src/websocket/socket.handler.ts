@@ -33,14 +33,14 @@ export function setupSocketHandlers(io: Server) {
 
     // Board events
     socket.on('board:join', (data) => {
-      boardEvents.handleJoinBoard(socket, {
+      boardEvents.handleJoinBoard(socket, io, {
         ...data,
         userId
       });
     });
 
     socket.on('board:leave', (data) => {
-      boardEvents.handleLeaveBoard(socket, data.boardId, userId);
+      boardEvents.handleLeaveBoard(socket, io, data.boardId, userId);
     });
 
     // Cursor events
@@ -73,6 +73,27 @@ export function setupSocketHandlers(io: Server) {
       });
     });
 
+    socket.on('element:undo', (data) => {
+      elementEvents.handleUndo(socket, io, {
+        ...data,
+        userId
+      });
+    });
+
+    socket.on('element:redo', (data) => {
+      elementEvents.handleRedo(socket, io, {
+        ...data,
+        userId
+      });
+    });
+
+    socket.on('board:clear', (data) => {
+      elementEvents.handleClearBoard(socket, io, {
+        ...data,
+        userId,
+      });
+    });
+
     // Handle disconnect
     socket.on('disconnect', async () => {
       console.log(`🔌 User ${userId} disconnected (socket: ${socket.id})`);
@@ -84,7 +105,7 @@ export function setupSocketHandlers(io: Server) {
       for (const room of rooms) {
         if (room.startsWith('board:')) {
           const boardId = room.replace('board:', '');
-          await boardEvents.handleLeaveBoard(socket, boardId, userId);
+          await boardEvents.handleLeaveBoard(socket, io, boardId, userId);
         }
       }
     });

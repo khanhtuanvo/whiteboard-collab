@@ -1,4 +1,4 @@
-import { Socket } from 'socket.io';
+import { Server, Socket } from 'socket.io';
 import redis from '../../config/redis';
 import prisma from '../../config/database';
 
@@ -10,7 +10,7 @@ interface JoinBoardData {
 }
 
 export class BoardEvents {
-  async handleJoinBoard(socket: Socket, data: JoinBoardData) {
+  async handleJoinBoard(socket: Socket, io: Server, data: JoinBoardData) {
     const { boardId, userId, userName, userColor } = data;
 
     try {
@@ -51,18 +51,14 @@ export class BoardEvents {
       // Set expiry for cleanup
       await redis.expire(`active:board:${boardId}`, 3600); // 1 hour
 
-      // Get all active users
+      // Get full active user list
       const activeUsers = await redis.hgetall(`active:board:${boardId}`);
       const users = Object.values(activeUsers).map(u => JSON.parse(u));
 
-      // Notify all users in room
-      socket.to(`board:${boardId}`).emit('user:joined', {
-        userId,
-        userName,
-        userColor
-      });
-
-      // Send current active users to joining user
+      // Broadcast full user list to everyone in the room (including the new joiner).
+      // Legacy events kept alongside for any clients still listening to them.
+      io.to(`board:${boardId}`).emit('room:users', users);
+      socket.to(`board:${boardId}`).emit('user:joined', { userId, userName, userColor });
       socket.emit('board:active_users', users);
 
       console.log(`✅ User ${userName} joined board ${boardId}`);
@@ -72,7 +68,7 @@ export class BoardEvents {
     }
   }
 
-  async handleLeaveBoard(socket: Socket, boardId: string, userId: string) {
+  async handleLeaveBoard(socket: Socket, io: Server, boardId: string, userId: string) {
     try {
       // Leave Socket.io room
       socket.leave(`board:${boardId}`);
@@ -80,7 +76,12 @@ export class BoardEvents {
       // Remove from Redis
       await redis.hdel(`active:board:${boardId}`, userId);
 
-      // Notify others
+      // Get updated user list
+      const remaining = await redis.hgetall(`active:board:${boardId}`);
+      const users = Object.values(remaining ?? {}).map(u => JSON.parse(u));
+
+      // Broadcast updated full list to remaining users. Legacy event kept for compat.
+      io.to(`board:${boardId}`).emit('room:users', users);
       socket.to(`board:${boardId}`).emit('user:left', { userId });
 
       console.log(`User ${userId} left board ${boardId}`);

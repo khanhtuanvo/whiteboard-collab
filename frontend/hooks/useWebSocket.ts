@@ -12,10 +12,12 @@ interface UseWebSocketOptions {
   onElementCreated: (element: Element) => void;
   onElementUpdated: (id: string, properties: Record<string, unknown>) => void;
   onElementDeleted: (id: string) => void;
+  onSnapshot: (elements: Element[]) => void;
   onActiveUsers: (users: ActiveUser[]) => void;
   onUserJoined: (user: Omit<ActiveUser, 'cursor' | 'lastSeen'>) => void;
   onUserLeft: (userId: string) => void;
   onCursorUpdate: (userId: string, x: number, y: number) => void;
+  onBoardCleared?: () => void;
 }
 
 export function useWebSocket({
@@ -25,27 +27,33 @@ export function useWebSocket({
   onElementCreated,
   onElementUpdated,
   onElementDeleted,
+  onSnapshot,
   onActiveUsers,
   onUserJoined,
   onUserLeft,
   onCursorUpdate,
+  onBoardCleared,
 }: UseWebSocketOptions) {
   // Keep callbacks in refs so the effect never needs to re-run when they change
   const onElementCreatedRef = useRef(onElementCreated);
   const onElementUpdatedRef = useRef(onElementUpdated);
   const onElementDeletedRef = useRef(onElementDeleted);
+  const onSnapshotRef = useRef(onSnapshot);
   const onActiveUsersRef = useRef(onActiveUsers);
   const onUserJoinedRef = useRef(onUserJoined);
   const onUserLeftRef = useRef(onUserLeft);
   const onCursorUpdateRef = useRef(onCursorUpdate);
+  const onBoardClearedRef = useRef(onBoardCleared);
 
   useEffect(() => { onElementCreatedRef.current = onElementCreated; });
   useEffect(() => { onElementUpdatedRef.current = onElementUpdated; });
   useEffect(() => { onElementDeletedRef.current = onElementDeleted; });
+  useEffect(() => { onSnapshotRef.current = onSnapshot; });
   useEffect(() => { onActiveUsersRef.current = onActiveUsers; });
   useEffect(() => { onUserJoinedRef.current = onUserJoined; });
   useEffect(() => { onUserLeftRef.current = onUserLeft; });
   useEffect(() => { onCursorUpdateRef.current = onCursorUpdate; });
+  useEffect(() => { onBoardClearedRef.current = onBoardCleared; });
 
   useEffect(() => {
     // Don't connect if user isn't authenticated yet
@@ -85,23 +93,43 @@ export function useWebSocket({
       onElementDeletedRef.current(data.id);
     };
 
+    const handleSnapshot = (elements: Element[]) => {
+      onSnapshotRef.current(elements);
+    };
+
+    const handleBoardCleared = () => {
+      onBoardClearedRef.current?.();
+    };
+
+    // room:users carries the full active-user list; replaces the piecemeal
+    // board:active_users / user:joined / user:left trio for presence sync.
+    const handleRoomUsers = (users: ActiveUser[]) => {
+      onActiveUsersRef.current(users);
+    };
+
     socket.on('board:active_users', handleActiveUsers);
     socket.on('user:joined', handleUserJoined);
     socket.on('user:left', handleUserLeft);
+    socket.on('room:users', handleRoomUsers);
     socket.on('cursor:update', handleCursorUpdate);
     socket.on('element:created', handleElementCreated);
     socket.on('element:updated', handleElementUpdated);
     socket.on('element:deleted', handleElementDeleted);
+    socket.on('element:snapshot', handleSnapshot);
+    socket.on('board:cleared', handleBoardCleared);
 
     return () => {
       socket.emit('board:leave', { boardId });
       socket.off('board:active_users', handleActiveUsers);
       socket.off('user:joined', handleUserJoined);
       socket.off('user:left', handleUserLeft);
+      socket.off('room:users', handleRoomUsers);
       socket.off('cursor:update', handleCursorUpdate);
       socket.off('element:created', handleElementCreated);
       socket.off('element:updated', handleElementUpdated);
       socket.off('element:deleted', handleElementDeleted);
+      socket.off('element:snapshot', handleSnapshot);
+      socket.off('board:cleared', handleBoardCleared);
     };
   }, [boardId, userName, userColor]);
 
@@ -121,5 +149,17 @@ export function useWebSocket({
     getSocket().emit('element:delete', { boardId, elementId });
   }, [boardId]);
 
-  return { emitCursorMove, emitCreateElement, emitUpdateElement, emitDeleteElement };
+  const emitUndo = useCallback(() => {
+    getSocket().emit('element:undo', { boardId });
+  }, [boardId]);
+
+  const emitRedo = useCallback(() => {
+    getSocket().emit('element:redo', { boardId });
+  }, [boardId]);
+
+  const emitClearBoard = useCallback(() => {
+    getSocket().emit('board:clear', { boardId });
+  }, [boardId]);
+
+  return { emitCursorMove, emitCreateElement, emitUpdateElement, emitDeleteElement, emitUndo, emitRedo, emitClearBoard };
 }

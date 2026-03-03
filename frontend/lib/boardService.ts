@@ -31,4 +31,8 @@ export const boardService = {
     const response = await api.get(`/api/boards/${boardId}/elements`);
     return response.data;
   },
+
+  async addCollaborator(boardId: string, email: string, role: 'VIEWER' | 'EDITOR' | 'ADMIN' = 'EDITOR'): Promise<void> {
+    await api.post(`/api/boards/${boardId}/collaborators`, { email, role });
+  },
 };

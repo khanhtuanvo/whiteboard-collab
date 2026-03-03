@@ -17,6 +17,7 @@ interface BoardState {
   addElement: (element: Element) => void;
   updateElement: (id: string, properties: Record<string, unknown>) => void;
   removeElement: (id: string) => void;
+  clearElements: () => void;
   // Upsert a full element from a remote WS event — does NOT trigger canvas re-emission
   applyRemoteChange: (element: Element) => void;
   setActiveUsers: (users: ActiveUser[]) => void;
@@ -45,6 +46,8 @@ export const useBoardStore = create<BoardState>((set) => ({
 
   removeElement: (id) =>
     set((state) => ({ elements: state.elements.filter((el) => el.id !== id) })),
+
+  clearElements: () => set({ elements: [] }),
 
   // Upsert: add if new, replace if already known (handles backend confirmation after optimistic update)
   applyRemoteChange: (element) =>
