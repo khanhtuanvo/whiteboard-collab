@@ -15,6 +15,7 @@ import Toolbar from '@/components/board/Toolbar';
 import Cursor from '@/components/board/Cursor';
 import ColorPicker from '@/components/board/ColorPicker';
 import ConnectionBanner from '@/components/board/ConnectionBanner';
+import ClusterSuggestions from '@/components/ai/ClusterSuggestions';
 import type { CanvasHandle, CanvasProps } from '@/components/board/Canvas';
 
 // Dynamic import to avoid SSR issues with Fabric.js
@@ -326,7 +327,7 @@ export default function BoardPage() {
       </div>
 
       {/* Toolbar — centered at the top */}
-      <div className="absolute top-16 left-0 right-0 z-10 flex justify-center pt-4">
+      <div className="absolute top-16 left-0 right-0 z-10 flex justify-center pt-4 gap-2">
         <Toolbar
           selectedTool={selectedTool}
           onToolSelect={setSelectedTool}
@@ -345,6 +346,13 @@ export default function BoardPage() {
           onClearAll={handleClearAll}
           onDeleteSelected={() => canvasRef.current?.deleteSelected()}
         />
+        <div className="bg-white shadow-lg rounded-lg p-2 flex items-center">
+          <ClusterSuggestions
+            boardId={boardId}
+            elements={elements}
+            onElementUpdate={handleElementUpdate}
+          />
+        </div>
       </div>
 
       {/* ColorPicker — floats in the top-right when an element is selected */}
