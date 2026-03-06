@@ -3,11 +3,14 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import http from 'http';
 import { Server } from 'socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
+import Redis from 'ioredis';
 import prisma from './config/database';
 import redis from './config/redis';
 import { AuthController } from './controllers/auth.controller';
 import { authMiddleware } from './middleware/auth.middleware';
 import { BoardController } from './controllers/board.controller';
+import { AiController } from './controllers/ai.controller';
 import { setupSocketHandlers } from './websocket/socket.handler';
 
 
@@ -23,6 +26,11 @@ const io = new Server(server, {
         methods: ['GET', 'POST'],
     }
 })
+
+// Redis adapter — enables Socket.io to broadcast across multiple backend instances
+const pubClient = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+const subClient = pubClient.duplicate();
+io.adapter(createAdapter(pubClient, subClient));
 
 
 //Middleware
@@ -41,6 +49,7 @@ app.use((req, res, next) => {
 //Controllers
 const authController = new AuthController();
 const boardController = new BoardController();
+const aiController = new AiController();
 
 
 app.get('/health', async (_req, res) => {
@@ -85,6 +94,9 @@ app.patch('/api/boards/:id', authMiddleware, (req, res) => boardController.updat
 app.delete('/api/boards/:id', authMiddleware, (req, res) => boardController.deleteBoard(req, res));
 app.post('/api/boards/:id/collaborators', authMiddleware, (req, res) => boardController.addCollaborator(req, res));
 
+// AI routes (protected)
+app.post('/api/boards/:id/ai/cluster', authMiddleware, (req, res) => aiController.clusterElements(req, res));
+
 // Wire up all Socket.io handlers (auth, board, cursor, element events)
 setupSocketHandlers(io);
 
@@ -105,7 +117,9 @@ server.listen(PORT, () => {
 process.on('SIGTERM', async () => {
     console.log('SIGTERM received, closing connection...');
     await prisma.$disconnect();
-    redis.disconnect()
+    redis.disconnect();
+    pubClient.disconnect();
+    subClient.disconnect();
     server.close(() => {
         console.log('Server closed');
         process.exit(0);
