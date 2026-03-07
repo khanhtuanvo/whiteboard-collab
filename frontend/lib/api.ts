@@ -9,7 +9,7 @@ const api = axios.create({
     }
 });
 
-//Add auth token
+// Add auth token
 api.interceptors.request.use((config) => {
     if (typeof window !== 'undefined'){
         const token = localStorage.getItem('token');
@@ -19,5 +19,17 @@ api.interceptors.request.use((config) => {
     }
     return config;
 });
+
+// Redirect to login on 401 (expired/invalid JWT)
+api.interceptors.response.use(
+    (response) => response,
+    (error) => {
+        if (error.response?.status === 401 && typeof window !== 'undefined') {
+            localStorage.removeItem('token');
+            window.location.href = '/login';
+        }
+        return Promise.reject(error);
+    }
+);
 
 export default api;

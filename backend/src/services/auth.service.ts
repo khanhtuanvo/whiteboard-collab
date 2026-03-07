@@ -73,13 +73,26 @@ export class AuthService {
                 avatarUrl: true,
                 createdAt: true,
             }
-        
-        
         });
 
         if (!user) {
             throw new Error('User not found');
         }
+        return user;
+    }
+
+    async updateProfile(userId: string, data: { name?: string; avatarUrl?: string }) {
+        const user = await prisma.user.update({
+            where: { id: userId },
+            data,
+            select: {
+                id: true,
+                email: true,
+                name: true,
+                avatarUrl: true,
+                createdAt: true,
+            }
+        });
         return user;
     }
 }

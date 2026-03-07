@@ -1,3 +1,5 @@
+export type UserRole = 'OWNER' | 'EDITOR' | 'VIEWER' | 'ADMIN';
+
 export interface Board {
   id: string;
   title: string;
@@ -7,6 +9,8 @@ export interface Board {
   settings?: any;
   createdAt: string;
   updatedAt: string;
+  userRole?: UserRole;
+  _count?: { collaborators: number };
 }
 
 export interface CreateBoardInput {

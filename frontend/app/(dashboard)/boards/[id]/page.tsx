@@ -77,6 +77,9 @@ export default function BoardPage() {
 
   const userColor = useMemo(() => (user ? userIdToColor(user.id) : '#3b82f6'), [user]);
 
+  // VIEWER role: read-only canvas, hidden edit controls
+  const isReadOnly = board?.userRole === 'VIEWER';
+
   // Derive the currently selected element object from the store
   const selectedElement = useMemo(
     () => (selectedElementId ? elements.find(el => el.id === selectedElementId) ?? null : null),
@@ -176,6 +179,7 @@ export default function BoardPage() {
 
   // ─── Keyboard shortcuts (Ctrl+Z / Ctrl+Y) ───────────────────────────────────
   useEffect(() => {
+    if (isReadOnly) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
         e.preventDefault();
@@ -187,20 +191,21 @@ export default function BoardPage() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [undo, redo]);
+  }, [undo, redo, isReadOnly]);
 
   // ─── Canvas → WebSocket bridge ──────────────────────────────────────────────
   const handleElementCreate = useCallback(
     (element: Partial<Element>) => {
-      if (!element.type || !element.properties) return;
+      if (isReadOnly || !element.type || !element.properties) return;
       emitCreateElement(element.type as ElementType, element.properties as Record<string, unknown>);
       recordAction();
     },
-    [emitCreateElement, recordAction]
+    [emitCreateElement, recordAction, isReadOnly]
   );
 
   const handleElementUpdate = useCallback(
     (id: string, updates: Partial<Element>) => {
+      if (isReadOnly) return;
       // Build a flat payload: properties fields + optional top-level zIndex
       const payload: Record<string, unknown> = { ...(updates.properties ?? {}) };
       if (updates.zIndex !== undefined) payload.zIndex = updates.zIndex;
@@ -208,11 +213,12 @@ export default function BoardPage() {
       emitUpdateElement(id, payload);
       recordAction();
     },
-    [emitUpdateElement, recordAction]
+    [emitUpdateElement, recordAction, isReadOnly]
   );
 
   const handleElementDelete = useCallback(
     (id: string) => {
+      if (isReadOnly) return;
       // Optimistic removal: remove immediately so the canvas updates without
       // waiting for the server round-trip, making delete feel instant.
       removeElement(id);
@@ -220,22 +226,23 @@ export default function BoardPage() {
       setSelectedElementId(prev => (prev === id ? null : prev));
       recordAction();
     },
-    [removeElement, emitDeleteElement, recordAction]
+    [removeElement, emitDeleteElement, recordAction, isReadOnly]
   );
 
   const handleClearAll = useCallback(() => {
+    if (isReadOnly) return;
     emitClearBoard();
-  }, [emitClearBoard]);
+  }, [emitClearBoard, isReadOnly]);
 
   // ─── Color change from ColorPicker ──────────────────────────────────────────
   const handleColorChange = useCallback(
     (changes: { fill?: string; stroke?: string }) => {
-      if (!selectedElementId || !selectedElement) return;
+      if (isReadOnly || !selectedElementId || !selectedElement) return;
       handleElementUpdate(selectedElementId, {
         properties: { ...selectedElement.properties, ...changes },
       });
     },
-    [selectedElementId, selectedElement, handleElementUpdate]
+    [selectedElementId, selectedElement, handleElementUpdate, isReadOnly]
   );
 
   // ─── Mouse move → broadcast cursor position ─────────────────────────────────
@@ -297,6 +304,13 @@ export default function BoardPage() {
       <div className="absolute top-0 left-0 right-0 h-16 bg-white border-b z-10 flex items-center px-4 gap-4">
         <h1 className="text-xl font-semibold flex-1 truncate">{board.title}</h1>
 
+        {/* Read-only badge for viewers */}
+        {isReadOnly && (
+          <span className="text-xs font-medium bg-amber-100 text-amber-700 px-2.5 py-1 rounded-full border border-amber-200">
+            View only
+          </span>
+        )}
+
         {/* Active users avatar stack */}
         <div className="flex items-center">
           {activeUsers.slice(0, 5).map((u, i) => (
@@ -345,18 +359,21 @@ export default function BoardPage() {
           elements={elements}
           onClearAll={handleClearAll}
           onDeleteSelected={() => canvasRef.current?.deleteSelected()}
+          readOnly={isReadOnly}
         />
-        <div className="bg-white shadow-lg rounded-lg p-2 flex items-center">
-          <ClusterSuggestions
-            boardId={boardId}
-            elements={elements}
-            onElementUpdate={handleElementUpdate}
-          />
-        </div>
+        {!isReadOnly && (
+          <div className="bg-white shadow-lg rounded-lg p-2 flex items-center">
+            <ClusterSuggestions
+              boardId={boardId}
+              elements={elements}
+              onElementUpdate={handleElementUpdate}
+            />
+          </div>
+        )}
       </div>
 
-      {/* ColorPicker — floats in the top-right when an element is selected */}
-      {selectedElement && (
+      {/* ColorPicker — floats in the top-right when an element is selected (editors only) */}
+      {!isReadOnly && selectedElement && (
         <div className="absolute top-32 right-4 z-10">
           <ColorPicker
             fill={selectedElement.properties.fill ?? selectedElement.properties.color}
@@ -381,7 +398,7 @@ export default function BoardPage() {
           onElementCreate={handleElementCreate}
           onElementUpdate={handleElementUpdate}
           onElementDelete={handleElementDelete}
-          selectedTool={selectedTool as 'select' | 'rectangle' | 'circle' | 'text' | 'sticky_note' | 'pen' | 'line' | 'arrow'}
+          selectedTool={isReadOnly ? 'select' : selectedTool as 'select' | 'rectangle' | 'circle' | 'text' | 'sticky_note' | 'pen' | 'line' | 'arrow'}
           onSelectionChange={setSelectedElementId}
           onZoomChange={setZoomLevel}
         />

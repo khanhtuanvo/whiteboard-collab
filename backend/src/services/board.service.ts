@@ -14,9 +14,19 @@ export class BoardService {
                     }
                 ]
             },
-            orderBy: {updatedAt: 'desc'}
+            orderBy: {updatedAt: 'desc'},
+            include: {
+                _count: { select: { collaborators: true } },
+                collaborators: {
+                    where: { userId },
+                    select: { role: true }
+                }
+            }
         });
-        return boards;
+        return boards.map(b => ({
+            ...b,
+            userRole: b.ownerId === userId ? 'OWNER' : (b.collaborators[0]?.role ?? 'VIEWER'),
+        }));
     }
 
     async getBoard(boardId: string, userId: string){
@@ -36,13 +46,18 @@ export class BoardService {
             include: {
                 owner: {
                     select: { id: true, name: true, email: true}
+                },
+                collaborators: {
+                    where: { userId },
+                    select: { role: true }
                 }
             }
         });
         if (!board){
             throw new Error('Board not found or access denied')
         }
-        return board;
+        const userRole = board.ownerId === userId ? 'OWNER' : (board.collaborators[0]?.role ?? 'VIEWER');
+        return { ...board, userRole };
     }
 
     async createBoard(title: string, ownerId: string, isPublic: boolean = false){

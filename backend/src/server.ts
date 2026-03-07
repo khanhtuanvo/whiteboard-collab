@@ -79,6 +79,7 @@ app.get('/health', async (_req, res) => {
 app.post('/api/auth/register', (req, res) => authController.register(req, res));
 app.post('/api/auth/login', (req, res) => authController.login(req, res));
 app.get('/api/auth/profile', authMiddleware, (req, res) => authController.getProfile(req, res));
+app.patch('/api/auth/profile', authMiddleware, (req, res) => authController.updateProfile(req, res));
 
 // Protected route example
 app.get('/api/test-protected', authMiddleware, (req, res) => {

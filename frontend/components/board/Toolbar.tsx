@@ -42,10 +42,14 @@ interface ToolbarProps {
   // Phase 1.6 additions
   onClearAll?: () => void;
   onDeleteSelected?: () => void;
+  // Phase 5 — viewer mode
+  readOnly?: boolean;
 }
 
 const STROKE_WIDTHS = [1, 3, 6];
 const FONT_SIZES = [12, 16, 20, 24, 32, 48];
+
+const EDIT_TOOLS = ['rectangle', 'circle', 'text', 'sticky_note', 'pen', 'line', 'arrow'];
 
 export default function Toolbar({
   selectedTool,
@@ -64,6 +68,7 @@ export default function Toolbar({
   elements = [],
   onClearAll,
   onDeleteSelected,
+  readOnly = false,
 }: ToolbarProps) {
   const [clearConfirm, setClearConfirm] = useState(false);
   const tools = [
@@ -76,6 +81,8 @@ export default function Toolbar({
     { id: 'line', icon: Minus, label: 'Line' },
     { id: 'arrow', icon: MoveRight, label: 'Arrow' },
   ];
+
+  const visibleTools = readOnly ? tools.filter(t => !EDIT_TOOLS.includes(t.id)) : tools;
 
   const isTextType = selectedElement?.type === ElementType.TEXT || selectedElement?.type === ElementType.STICKY_NOTE;
   const currentStrokeWidth = selectedElement?.properties?.strokeWidth ?? 1;
@@ -96,8 +103,8 @@ export default function Toolbar({
 
   return (
     <div className="bg-white shadow-lg rounded-lg p-2 flex items-center gap-2 flex-wrap">
-      {/* Drawing tools */}
-      {tools.map((tool) => (
+      {/* Drawing tools (edit tools hidden for viewers) */}
+      {visibleTools.map((tool) => (
         <Button
           key={tool.id}
           variant={selectedTool === tool.id ? 'default' : 'ghost'}
@@ -111,15 +118,18 @@ export default function Toolbar({
 
       <Separator orientation="vertical" className="h-6" />
 
-      {/* Undo / Redo */}
-      <Button variant="ghost" size="sm" onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)">
-        <Undo2 className="h-4 w-4" />
-      </Button>
-      <Button variant="ghost" size="sm" onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Y)">
-        <Redo2 className="h-4 w-4" />
-      </Button>
-
-      <Separator orientation="vertical" className="h-6" />
+      {/* Undo / Redo — hidden for viewers */}
+      {!readOnly && (
+        <>
+          <Button variant="ghost" size="sm" onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)">
+            <Undo2 className="h-4 w-4" />
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Y)">
+            <Redo2 className="h-4 w-4" />
+          </Button>
+          <Separator orientation="vertical" className="h-6" />
+        </>
+      )}
 
       {/* Export / Share */}
       <Button variant="ghost" size="sm" onClick={onExport} title="Export as PNG">
@@ -134,8 +144,8 @@ export default function Toolbar({
         <Share2 className="h-4 w-4" />
       </Button>
 
-      {/* ── Selection-dependent controls ── */}
-      {selectedElement && (
+      {/* Selection-dependent edit controls — hidden for viewers */}
+      {!readOnly && selectedElement && (
         <>
           <Separator orientation="vertical" className="h-6" />
 
@@ -186,7 +196,7 @@ export default function Toolbar({
             <SendToBack className="h-4 w-4" />
           </Button>
 
-          {/* Delete — uses deleteSelected() so multi-select works correctly */}
+          {/* Delete */}
           <Button
             variant="ghost"
             size="sm"
@@ -205,17 +215,21 @@ export default function Toolbar({
         {zoomPercent}%
       </span>
 
-      {/* Clear All */}
-      <Separator orientation="vertical" className="h-6" />
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => setClearConfirm(true)}
-        title="Clear All"
-        className="text-red-500 hover:text-red-700 hover:bg-red-50"
-      >
-        <Eraser className="h-4 w-4" />
-      </Button>
+      {/* Clear All — hidden for viewers */}
+      {!readOnly && (
+        <>
+          <Separator orientation="vertical" className="h-6" />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setClearConfirm(true)}
+            title="Clear All"
+            className="text-red-500 hover:text-red-700 hover:bg-red-50"
+          >
+            <Eraser className="h-4 w-4" />
+          </Button>
+        </>
+      )}
 
       {/* Confirmation dialog */}
       {clearConfirm && (
