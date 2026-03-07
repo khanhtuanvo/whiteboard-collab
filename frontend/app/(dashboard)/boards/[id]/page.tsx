@@ -93,7 +93,7 @@ export default function BoardPage() {
     applyRemoteChange(el);
   }, [applyRemoteChange]);
   const handleElementUpdated = useCallback(
-    (id: string, properties: Record<string, unknown>) => updateElement(id, properties),
+    (id: string, properties: Record<string, unknown>) => updateElement(id, properties as Element['properties']),
     [updateElement]
   );
   const handleElementDeleted = useCallback((id: string) => removeElement(id), [removeElement]);

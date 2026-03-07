@@ -15,7 +15,7 @@ interface BoardState {
   activeUsers: ActiveUser[];
   setElements: (elements: Element[]) => void;
   addElement: (element: Element) => void;
-  updateElement: (id: string, properties: Record<string, unknown>) => void;
+  updateElement: (id: string, properties: Element['properties']) => void;
   removeElement: (id: string) => void;
   clearElements: () => void;
   // Upsert a full element from a remote WS event — does NOT trigger canvas re-emission
