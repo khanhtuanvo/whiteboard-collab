@@ -33,6 +33,12 @@ export interface CanvasProps {
   selectedTool: 'select' | 'rectangle' | 'circle' | 'text' | 'sticky_note' | 'pen' | 'line' | 'arrow';
   onSelectionChange?: (elementId: string | null) => void;
   onZoomChange?: (zoom: number) => void;
+  /** Called with intermediate drag/move positions — no history recording */
+  onElementDragUpdate?: (id: string, updates: Partial<Element>) => void;
+  /** Called when the active drawing tool should reset to 'select' (after element creation) */
+  onToolReset?: () => void;
+  /** Called at the end of a discrete user gesture (drag end, resize end, text edit committed) */
+  onGestureEnd?: () => void;
 }
 
 const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
@@ -44,6 +50,9 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
   selectedTool,
   onSelectionChange,
   onZoomChange,
+  onElementDragUpdate,
+  onToolReset,
+  onGestureEnd,
 }: CanvasProps, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fabricCanvasRef = useRef<fabric.Canvas | null>(null);
@@ -63,6 +72,9 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
   // Tracks an element whose group was removed for in-canvas sticky editing
   const editingStickyIdRef = useRef<string | null>(null);
 
+  // Tracks the ElementType of the element being created so we can auto-select it on arrival
+  const pendingSelectTypeRef = useRef<ElementType | null>(null);
+
   // Keep latest prop values in refs so stable callbacks never go stale
   const selectedToolRef = useRef(selectedTool);
   const elementsRef = useRef(elements);
@@ -72,6 +84,9 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
   const onElementDeleteRef = useRef(onElementDelete);
   const onSelectionChangeRef = useRef(onSelectionChange);
   const onZoomChangeRef = useRef(onZoomChange);
+  const onElementDragUpdateRef = useRef(onElementDragUpdate);
+  const onToolResetRef = useRef(onToolReset);
+  const onGestureEndRef = useRef(onGestureEnd);
 
   useEffect(() => { selectedToolRef.current = selectedTool; }, [selectedTool]);
   useEffect(() => { elementsRef.current = elements; }, [elements]);
@@ -81,6 +96,9 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
   useEffect(() => { onElementDeleteRef.current = onElementDelete; }, [onElementDelete]);
   useEffect(() => { onSelectionChangeRef.current = onSelectionChange; }, [onSelectionChange]);
   useEffect(() => { onZoomChangeRef.current = onZoomChange; }, [onZoomChange]);
+  useEffect(() => { onElementDragUpdateRef.current = onElementDragUpdate; }, [onElementDragUpdate]);
+  useEffect(() => { onToolResetRef.current = onToolReset; }, [onToolReset]);
+  useEffect(() => { onGestureEndRef.current = onGestureEnd; }, [onGestureEnd]);
 
   // ─── Create a Fabric object from element data ───────────────────────────────
   const createFabricObject = useCallback((element: Element): fabric.Object | null => {
@@ -204,6 +222,70 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       default:
         return null;
     }
+  }, []);
+
+  // ─── Sticky-note in-canvas edit mode (shared by dblclick + auto-edit after creation) ──
+  const enterStickyEditMode = useCallback((group: fabric.Group, elementId: string) => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas) return;
+
+    const textObj = group.getObjects().find(o => o.type === 'i-text' || o.type === 'textbox') as fabric.IText | undefined;
+    const rectObj = group.getObjects().find(o => o.type === 'rect') as fabric.Rect | undefined;
+    if (!textObj) return;
+
+    editingStickyIdRef.current = elementId;
+
+    const gLeft = group.left ?? 0;
+    const gTop = group.top ?? 0;
+    const gScaleX = group.scaleX ?? 1;
+    const gScaleY = group.scaleY ?? 1;
+    const gW = (group.width ?? 200) * gScaleX;
+    const gH = (group.height ?? 200) * gScaleY;
+
+    canvas.remove(group);
+
+    const bgRect = new fabric.Rect({
+      left: gLeft,
+      top: gTop,
+      width: gW,
+      height: gH,
+      fill: (rectObj?.fill as string) ?? '#fef08a',
+      stroke: '#ca8a04',
+      strokeWidth: 1,
+      selectable: false,
+      evented: false,
+    });
+
+    // No data.elementId — prevents the global text:editing:exited handler from firing
+    const standaloneText = new fabric.Textbox(textObj.text ?? '', {
+      left: gLeft + 10,
+      top: gTop + 10,
+      fontSize: (textObj as any).fontSize ?? 16,
+      fill: '#000000',
+      width: gW - 20,
+    });
+
+    canvas.add(bgRect);
+    canvas.add(standaloneText);
+    canvas.setActiveObject(standaloneText);
+    standaloneText.enterEditing();
+    standaloneText.selectAll();
+
+    standaloneText.once('editing:exited', () => {
+      const newText = standaloneText.text ?? '';
+      canvas.remove(standaloneText);
+      canvas.remove(bgRect);
+      editingStickyIdRef.current = null;
+
+      const element = elementsRef.current.find(el => el.id === elementId);
+      if (element) {
+        onElementUpdateRef.current(elementId, {
+          properties: { ...element.properties, text: newText },
+        });
+      }
+      onGestureEndRef.current?.();
+      canvas.renderAll();
+    });
   }, []);
 
   // ─── Stable mouse handlers (read from refs, never go stale) ─────────────────
@@ -349,6 +431,11 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     }
 
     onElementCreateRef.current(elementData);
+    // Mark which type was just created so the sync effect can auto-select it on arrival
+    if (elementData.type !== undefined) {
+      pendingSelectTypeRef.current = elementData.type;
+    }
+    onToolResetRef.current?.();
     isDrawingRef.current = false;
     drawStartRef.current = null;
   }, []);
@@ -382,6 +469,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     } else {
       emitUpdate(obj);
     }
+    // Gesture (drag / resize) ended — commit to history
+    onGestureEndRef.current?.();
   }, []);
 
   // ─── Init canvas once ────────────────────────────────────────────────────────
@@ -419,7 +508,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         const element = elementsRef.current.find(el => el.id === elementId);
         if (!element) return;
         const t = child.calcTransformMatrix();
-        onElementUpdateRef.current(elementId, {
+        // Use drag-only callback — broadcasts position for collaboration but does NOT record history
+        onElementDragUpdateRef.current?.(elementId, {
           properties: {
             ...element.properties,
             x: t[4] - child.getScaledWidth() / 2,
@@ -543,77 +633,30 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       const target = canvas.findTarget(e.e);
       if (!target) return;
 
-      // Plain text (IText) — enter editing directly
+      // Plain text (IText) — enter editing and save on exit
       if (target.type === 'i-text') {
-        canvas.setActiveObject(target);
-        (target as fabric.IText).enterEditing();
+        const itext = target as fabric.IText;
+        const elementId = (itext as any).data?.elementId as string | undefined;
+        canvas.setActiveObject(itext);
+        itext.enterEditing();
+        itext.once('editing:exited', () => {
+          if (!elementId) return;
+          const element = elementsRef.current.find(el => el.id === elementId);
+          if (!element) return;
+          onElementUpdateRef.current(elementId, {
+            properties: { ...element.properties, text: itext.text ?? '' },
+          });
+          onGestureEndRef.current?.();
+        });
         return;
       }
 
-      // Sticky note (Group containing a Rect + IText)
+      // Sticky note (Group) — delegate to shared helper
       if (target.type === 'group') {
         const group = target as fabric.Group;
         const elementId = (group as any).data?.elementId as string | undefined;
         if (!elementId) return;
-
-        const textObj = group.getObjects().find(o => o.type === 'i-text' || o.type === 'textbox') as fabric.IText | undefined;
-        const rectObj = group.getObjects().find(o => o.type === 'rect') as fabric.Rect | undefined;
-        if (!textObj) return;
-
-        // Guard: prevent sync loop from re-adding the group while editing
-        editingStickyIdRef.current = elementId;
-
-        const gLeft = group.left ?? 0;
-        const gTop = group.top ?? 0;
-        const gScaleX = group.scaleX ?? 1;
-        const gScaleY = group.scaleY ?? 1;
-        const gW = (group.width ?? 200) * gScaleX;
-        const gH = (group.height ?? 200) * gScaleY;
-
-        canvas.remove(group);
-
-        // Keep the sticky note background visible while editing so the color/format is preserved
-        const bgRect = new fabric.Rect({
-          left: gLeft,
-          top: gTop,
-          width: gW,
-          height: gH,
-          fill: (rectObj?.fill as string) ?? '#fef08a',
-          stroke: '#ca8a04',
-          strokeWidth: 1,
-          selectable: false,
-          evented: false,
-        });
-
-        // Use Textbox so text wraps within the sticky note bounds during editing
-        const standaloneText = new fabric.Textbox(textObj.text ?? '', {
-          left: gLeft + 10,
-          top: gTop + 10,
-          fontSize: (textObj as any).fontSize ?? 16,
-          fill: '#000000',
-          width: gW - 20,
-          data: { elementId },
-        });
-
-        canvas.add(bgRect);
-        canvas.add(standaloneText);
-        canvas.setActiveObject(standaloneText);
-        standaloneText.enterEditing();
-
-        standaloneText.once('editing:exited', () => {
-          const newText = standaloneText.text ?? '';
-          canvas.remove(standaloneText);
-          canvas.remove(bgRect);
-          editingStickyIdRef.current = null;
-
-          const element = elementsRef.current.find(el => el.id === elementId);
-          if (element) {
-            onElementUpdateRef.current(elementId, {
-              properties: { ...element.properties, text: newText },
-            });
-          }
-          canvas.renderAll();
-        });
+        enterStickyEditMode(group, elementId);
       }
     };
 
@@ -637,6 +680,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         },
         zIndex: 0,
       });
+      pendingSelectTypeRef.current = ElementType.LINE;
+      onToolResetRef.current?.();
     };
 
     canvas.on('mouse:down', handleMouseDown);
@@ -722,7 +767,32 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       const existing = existingMap.get(el.id);
       if (!existing) {
         const obj = createFabricObject(el);
-        if (obj) canvas.add(obj);
+        if (obj) {
+          canvas.add(obj);
+          // Auto-select the element that was just created by the local user
+          if (pendingSelectTypeRef.current !== null && pendingSelectTypeRef.current === el.type) {
+            pendingSelectTypeRef.current = null;
+            canvas.setActiveObject(obj);
+            onSelectionChangeRef.current?.(el.id);
+            if (el.type === ElementType.TEXT) {
+              // Enter edit mode immediately; 'editing:exited' listener will save text + call onGestureEnd
+              const itext = obj as fabric.IText;
+              itext.enterEditing();
+              itext.selectAll();
+              itext.once('editing:exited', () => {
+                const element = elementsRef.current.find(e => e.id === el.id);
+                if (!element) return;
+                onElementUpdateRef.current(el.id, {
+                  properties: { ...element.properties, text: itext.text ?? '' },
+                });
+                onGestureEndRef.current?.();
+              });
+            } else if (el.type === ElementType.STICKY_NOTE) {
+              // Defer one frame so the object is fully settled on the canvas
+              requestAnimationFrame(() => enterStickyEditMode(obj as fabric.Group, el.id));
+            }
+          }
+        }
       } else {
         // Apply style + position updates without recreating the object
         const p = el.properties;
@@ -755,7 +825,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     });
 
     canvas.renderAll();
-  }, [elements, createFabricObject]);
+  }, [elements, createFabricObject, enterStickyEditMode]);
 
   useImperativeHandle(ref, () => ({
     exportImage() {

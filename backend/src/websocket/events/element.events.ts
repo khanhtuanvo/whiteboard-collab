@@ -16,6 +16,8 @@ interface UpdateElementData {
   elementId: string;
   userId: string;
   properties: any;
+  /** When true this is an intermediate live-drag update — do NOT save a snapshot */
+  live?: boolean;
 }
 
 interface DeleteElementData {
@@ -133,7 +135,7 @@ export class ElementEvents {
   }
 
   async handleUpdateElement(socket: Socket, io: any, data: UpdateElementData) {
-    const { boardId, elementId, userId, properties } = data;
+    const { boardId, elementId, userId, properties, live } = data;
 
     try {
       const hasAccess = await this.checkBoardAccess(boardId, userId, 'EDITOR');
@@ -151,8 +153,10 @@ export class ElementEvents {
         return;
       }
 
-      // Save board state before mutation; clears redo stack
-      await this.saveSnapshot(boardId);
+      // Only save a snapshot at gesture-end (commit) updates, not on every live drag tick
+      if (!live) {
+        await this.saveSnapshot(boardId);
+      }
 
       const updatedElement = await prisma.element.update({
         where: { id: elementId },

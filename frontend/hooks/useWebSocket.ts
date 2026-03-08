@@ -145,6 +145,11 @@ export function useWebSocket({
     getSocket().emit('element:update', { boardId, elementId, properties });
   }, [boardId]);
 
+  /** Live drag-position broadcast — backend skips snapshot for these */
+  const emitLiveUpdateElement = useCallback((elementId: string, properties: Record<string, unknown>) => {
+    getSocket().emit('element:update', { boardId, elementId, properties, live: true });
+  }, [boardId]);
+
   const emitDeleteElement = useCallback((elementId: string) => {
     getSocket().emit('element:delete', { boardId, elementId });
   }, [boardId]);
@@ -161,5 +166,5 @@ export function useWebSocket({
     getSocket().emit('board:clear', { boardId });
   }, [boardId]);
 
-  return { emitCursorMove, emitCreateElement, emitUpdateElement, emitDeleteElement, emitUndo, emitRedo, emitClearBoard };
+  return { emitCursorMove, emitCreateElement, emitUpdateElement, emitLiveUpdateElement, emitDeleteElement, emitUndo, emitRedo, emitClearBoard };
 }

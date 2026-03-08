@@ -37,6 +37,7 @@ export default function BoardPage() {
   const params = useParams();
   const router = useRouter();
   const user = useUserStore((state) => state.user);
+  const _hasHydrated = useUserStore((state) => state._hasHydrated);
   const boardId = params.id as string;
 
   // Element state lives in the store so WebSocket callbacks can update it
@@ -75,7 +76,18 @@ export default function BoardPage() {
 
   const canvasRef = useRef<CanvasHandle>(null);
 
-  const userColor = useMemo(() => (user ? userIdToColor(user.id) : '#3b82f6'), [user]);
+  const [userColor, setUserColor] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('cursorColor');
+      if (stored) return stored;
+    }
+    return user ? userIdToColor(user.id) : '#3b82f6';
+  });
+
+  useEffect(() => {
+    const stored = localStorage.getItem('cursorColor');
+    setUserColor(stored ?? (user ? userIdToColor(user.id) : '#3b82f6'));
+  }, [user]);
 
   // VIEWER role: read-only canvas, hidden edit controls
   const isReadOnly = board?.userRole === 'VIEWER';
@@ -116,7 +128,7 @@ export default function BoardPage() {
     [updateUserCursor]
   );
 
-  const { emitCursorMove, emitCreateElement, emitUpdateElement, emitDeleteElement, emitUndo, emitRedo, emitClearBoard } =
+  const { emitCursorMove, emitCreateElement, emitUpdateElement, emitLiveUpdateElement, emitDeleteElement, emitUndo, emitRedo, emitClearBoard } =
     useWebSocket({
       boardId,
       userName: user?.name ?? '',
@@ -140,6 +152,7 @@ export default function BoardPage() {
 
   // ─── Load board + elements ──────────────────────────────────────────────────
   useEffect(() => {
+    if (!_hasHydrated) return;
     if (!user) {
       router.push('/login');
       return;
@@ -175,7 +188,7 @@ export default function BoardPage() {
     };
 
     load();
-  }, [boardId, user, router, reset, setElements]);
+  }, [boardId, user, _hasHydrated, router, reset, setElements]);
 
   // ─── Keyboard shortcuts (Ctrl+Z / Ctrl+Y) ───────────────────────────────────
   useEffect(() => {
@@ -216,6 +229,18 @@ export default function BoardPage() {
     [emitUpdateElement, recordAction, isReadOnly]
   );
 
+  // Live drag updates: broadcast position for collaboration but do NOT save a snapshot.
+  // History snapshot is committed via onGestureEnd (fired by Canvas on pointerup).
+  const handleElementDragUpdate = useCallback(
+    (id: string, updates: Partial<Element>) => {
+      if (isReadOnly) return;
+      const payload: Record<string, unknown> = { ...(updates.properties ?? {}) };
+      if (Object.keys(payload).length === 0) return;
+      emitLiveUpdateElement(id, payload);
+    },
+    [emitLiveUpdateElement, isReadOnly]
+  );
+
   const handleElementDelete = useCallback(
     (id: string) => {
       if (isReadOnly) return;
@@ -241,6 +266,7 @@ export default function BoardPage() {
       handleElementUpdate(selectedElementId, {
         properties: { ...selectedElement.properties, ...changes },
       });
+      // handleElementUpdate already calls recordAction via its own path
     },
     [selectedElementId, selectedElement, handleElementUpdate, isReadOnly]
   );
@@ -398,9 +424,12 @@ export default function BoardPage() {
           onElementCreate={handleElementCreate}
           onElementUpdate={handleElementUpdate}
           onElementDelete={handleElementDelete}
+          onElementDragUpdate={handleElementDragUpdate}
           selectedTool={isReadOnly ? 'select' : selectedTool as 'select' | 'rectangle' | 'circle' | 'text' | 'sticky_note' | 'pen' | 'line' | 'arrow'}
           onSelectionChange={setSelectedElementId}
           onZoomChange={setZoomLevel}
+          onToolReset={() => setSelectedTool('select')}
+          onGestureEnd={recordAction}
         />
 
         {/* Remote cursors */}

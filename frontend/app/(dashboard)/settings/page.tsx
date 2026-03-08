@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useUserStore } from '@/store/userStore';
 import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
@@ -30,6 +30,7 @@ export default function SettingsPage() {
   const user = useUserStore((state) => state.user);
   const setUser = useUserStore((state) => state.setUser);
   const token = useUserStore((state) => state.token);
+  const _hasHydrated = useUserStore((state) => state._hasHydrated);
 
   const [name, setName] = useState(user?.name ?? '');
   const [avatarUrl, setAvatarUrl] = useState(user?.avatarUrl ?? '');
@@ -39,8 +40,23 @@ export default function SettingsPage() {
   const defaultColor = user ? userIdToColor(user.id) : '#3b82f6';
   const [cursorColor, setCursorColor] = useState(storedColor ?? defaultColor);
 
-  if (!user) {
-    router.push('/login');
+  useEffect(() => {
+    if (!_hasHydrated) return;
+    if (!user) {
+      router.push('/login');
+    }
+  }, [user, _hasHydrated, router]);
+
+  // 2. Safely initialize LocalStorage/Color logic after mount
+  useEffect(() => {
+    if (user) {
+      const storedColor = localStorage.getItem(CURSOR_COLOR_KEY);
+      setCursorColor(storedColor ?? userIdToColor(user.id));
+    }
+  }, [user]);
+
+  // If no user, show nothing (useEffect handles the push)
+  if (!_hasHydrated || !user) {
     return null;
   }
 

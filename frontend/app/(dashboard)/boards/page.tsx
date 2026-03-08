@@ -18,6 +18,7 @@ type Tab = 'mine' | 'shared';
 export default function BoardsPage() {
   const router = useRouter();
   const user = useUserStore((state) => state.user);
+  const _hasHydrated = useUserStore((state) => state._hasHydrated);
   const [boards, setBoards] = useState<Board[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('mine');
@@ -34,12 +35,13 @@ export default function BoardsPage() {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!_hasHydrated) return;
     if (!user) {
       router.push('/login');
       return;
     }
     loadBoards();
-  }, [user, router]);
+  }, [user, _hasHydrated, router]);
 
   // Close context menu on outside click
   useEffect(() => {
