@@ -3,12 +3,66 @@ import redis from '../../config/redis';
 import prisma from '../../config/database';
 import { v4 as uuidv4 } from 'uuid';
 import { ElementType } from '@prisma/client';
+import { z } from 'zod';
+
+// Strict schema — rejects unknown keys to block prototype-pollution payloads.
+// Add fields here as the canvas feature set grows.
+const PropertiesSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  fill: z.string().optional(),
+  stroke: z.string().optional(),
+  strokeWidth: z.number().optional(),
+  opacity: z.number().optional(),
+  rotation: z.number().optional(),
+  scaleX: z.number().optional(),
+  scaleY: z.number().optional(),
+  offsetX: z.number().optional(),
+  offsetY: z.number().optional(),
+  text: z.string().optional(),
+  fontSize: z.number().optional(),
+  fontFamily: z.string().optional(),
+  fontStyle: z.string().optional(),
+  align: z.string().optional(),
+  verticalAlign: z.string().optional(),
+  lineHeight: z.number().optional(),
+  letterSpacing: z.number().optional(),
+  padding: z.number().optional(),
+  wrap: z.string().optional(),
+  points: z.array(z.number()).optional(),
+  tension: z.number().optional(),
+  closed: z.boolean().optional(),
+  pointerLength: z.number().optional(),
+  pointerWidth: z.number().optional(),
+  pointerAtBeginning: z.boolean().optional(),
+  pointerAtEnding: z.boolean().optional(),
+  cornerRadius: z.number().optional(),
+  radius: z.number().optional(),
+  radiusX: z.number().optional(),
+  radiusY: z.number().optional(),
+  // M2: only allow https:// or data:image/ URIs
+  src: z.string().refine(
+    v => v.startsWith('https://') || v.startsWith('data:image/'),
+    { message: 'src must be a valid https URL or data:image URI' }
+  ).optional(),
+  color: z.string().optional(),
+  dash: z.array(z.number()).optional(),
+  dashEnabled: z.boolean().optional(),
+  visible: z.boolean().optional(),
+  draggable: z.boolean().optional(),
+  x2: z.number().optional(),
+  y2: z.number().optional(),
+  pathData: z.string().optional(),
+}).strict();
 
 interface CreateElementData {
   boardId: string;
   userId: string;
   type: string;
   properties: any;
+  id?: string;
 }
 
 interface UpdateElementData {
@@ -34,13 +88,13 @@ interface UndoRedoData {
 export class ElementEvents {
   // ─── Snapshot helpers ────────────────────────────────────────────────────────
 
-  private async saveSnapshot(boardId: string): Promise<void> {
+  /** Read all current board elements as a serialisable snapshot array. */
+  private async readCurrentSnapshot(boardId: string): Promise<any[]> {
     const elements = await prisma.element.findMany({
       where: { boardId },
       orderBy: { zIndex: 'asc' },
     });
-
-    const snapshot = elements.map(el => ({
+    return elements.map(el => ({
       id: el.id,
       boardId: el.boardId,
       type: el.type,
@@ -48,30 +102,40 @@ export class ElementEvents {
       zIndex: el.zIndex,
       createdBy: el.createdBy,
     }));
+  }
 
-    await redis.lpush(`snapshots:${boardId}`, JSON.stringify(snapshot));
-    await redis.ltrim(`snapshots:${boardId}`, 0, 49);
-    // Any new mutation clears the redo stack
-    await redis.del(`redo:${boardId}`);
+  /**
+   * C1 + C2: Push an already-captured snapshot to the user-namespaced undo stack
+   * and clear that user's redo stack. Must be called AFTER a successful DB write
+   * and wrapped in its own try/catch by the caller so Redis failures never surface
+   * as DB errors.
+   */
+  private async saveSnapshot(boardId: string, userId: string, snapshot: any[]): Promise<void> {
+    await redis.lpush(`snapshots:${boardId}:${userId}`, JSON.stringify(snapshot));
+    await redis.ltrim(`snapshots:${boardId}:${userId}`, 0, 49);
+    // Any new mutation clears this user's redo stack
+    await redis.del(`redo:${boardId}:${userId}`);
   }
 
   private async restoreSnapshot(
     boardId: string,
     snapshot: any[]
   ): Promise<void> {
-    await prisma.element.deleteMany({ where: { boardId } });
-    if (snapshot.length > 0) {
-      await prisma.element.createMany({
-        data: snapshot.map(el => ({
-          id: el.id,
-          boardId: el.boardId,
-          type: el.type as ElementType,
-          properties: el.properties,
-          zIndex: el.zIndex ?? 0,
-          createdBy: el.createdBy,
-        })),
-      });
-    }
+    await prisma.$transaction(async (tx) => {
+      await tx.element.deleteMany({ where: { boardId } });
+      if (snapshot.length > 0) {
+        await tx.element.createMany({
+          data: snapshot.map(el => ({
+            id: el.id,
+            boardId: el.boardId,
+            type: el.type as ElementType,
+            properties: el.properties,
+            zIndex: el.zIndex ?? 0,
+            createdBy: el.createdBy,
+          })),
+        });
+      }
+    });
   }
 
   // ─── CRUD handlers ───────────────────────────────────────────────────────────
@@ -91,21 +155,51 @@ export class ElementEvents {
         return;
       }
 
-      // Save board state before mutation; clears redo stack
-      await this.saveSnapshot(boardId);
+      const propertiesResult = PropertiesSchema.safeParse(properties);
+      if (!propertiesResult.success) {
+        socket.emit('error', { message: 'Invalid properties', details: propertiesResult.error.issues });
+        return;
+      }
 
-      const elementId = uuidv4();
+      if (data.id !== undefined) {
+        const idResult = z.uuid().safeParse(data.id);
+        if (!idResult.success) {
+          socket.emit('error', { message: 'Invalid element ID format' });
+          return;
+        }
+      }
 
-      const element = await prisma.element.create({
-        data: {
-          id: elementId,
-          boardId,
-          type: type as ElementType,
-          properties,
-          zIndex: 0,
-          createdBy: userId,
-        },
+      const elementId = data.id ?? uuidv4();
+
+      // C1: Capture pre-mutation state BEFORE the DB write
+      const preSnapshot = await this.readCurrentSnapshot(boardId);
+
+      const element = await prisma.$transaction(async (tx) => {
+        // Lock the board row so concurrent inserts serialise their MAX(zIndex) reads.
+        await tx.$executeRaw`SELECT id FROM boards WHERE id = ${boardId} FOR UPDATE`;
+        const maxZ = await tx.element.aggregate({
+          where: { boardId },
+          _max: { zIndex: true },
+        });
+        const nextZ = (maxZ._max.zIndex ?? 0) + 1;
+        return tx.element.create({
+          data: {
+            id: elementId,
+            boardId,
+            type: type as ElementType,
+            properties,
+            zIndex: nextZ,
+            createdBy: userId,
+          },
+        });
       });
+
+      // C1: Save snapshot only on DB success; Redis failure is non-fatal
+      try {
+        await this.saveSnapshot(boardId, userId, preSnapshot);
+      } catch (redisErr) {
+        console.error('Snapshot save failed (non-fatal):', redisErr);
+      }
 
       // Add to Redis Stream (event sourcing)
       await redis.xadd(
@@ -128,9 +222,13 @@ export class ElementEvents {
       io.to(`board:${boardId}`).emit('element:created', element);
 
       console.log(`✅ Element ${elementId} created on board ${boardId}`);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error creating element:', error);
-      socket.emit('error', { message: 'Failed to create element' });
+      if (error?.code === 'P2002') {
+        socket.emit('error', { message: 'Element ID already exists' });
+      } else {
+        socket.emit('error', { message: 'Failed to create element' });
+      }
     }
   }
 
@@ -144,6 +242,13 @@ export class ElementEvents {
         return;
       }
 
+      // H2: Validate BEFORE the live branch so unvalidated properties are never broadcast
+      const propertiesResult = PropertiesSchema.safeParse(properties);
+      if (!propertiesResult.success) {
+        socket.emit('error', { message: 'Invalid properties', details: propertiesResult.error.issues });
+        return;
+      }
+
       const currentElement = await prisma.element.findUnique({
         where: { id: elementId },
       });
@@ -153,20 +258,40 @@ export class ElementEvents {
         return;
       }
 
-      // Only save a snapshot at gesture-end (commit) updates, not on every live drag tick
-      if (!live) {
-        await this.saveSnapshot(boardId);
+      // Live drag ticks: broadcast the client's full payload directly — no DB read/merge
+      // needed here. The pre-drag DB state is preserved for the snapshot at gesture-end.
+      if (live) {
+        io.to(`board:${boardId}`).emit('element:updated', {
+          id: elementId,
+          properties,
+        });
+        return;
       }
 
-      const updatedElement = await prisma.element.update({
-        where: { id: elementId },
-        data: {
-          properties: {
-            ...(currentElement.properties as Record<string, unknown>),
-            ...properties,
+      // C1: Capture pre-mutation state BEFORE the DB write
+      const preSnapshot = await this.readCurrentSnapshot(boardId);
+
+      // Gesture-end (commit) update: persist.
+      const updatedElement = await prisma.$transaction(async (tx) => {
+        const elem = await tx.element.findUnique({ where: { id: elementId } });
+        if (!elem) throw new Error('Element not found');
+        return tx.element.update({
+          where: { id: elementId },
+          data: {
+            properties: {
+              ...(elem.properties as Record<string, unknown>),
+              ...properties,
+            },
           },
-        },
+        });
       });
+
+      // C1: Save snapshot only on DB success; Redis failure is non-fatal
+      try {
+        await this.saveSnapshot(boardId, userId, preSnapshot);
+      } catch (redisErr) {
+        console.error('Snapshot save failed (non-fatal):', redisErr);
+      }
 
       // Add to history (Redis Sorted Set)
       await redis.zadd(
@@ -222,16 +347,25 @@ export class ElementEvents {
         return;
       }
 
-      // Save board state before mutation; clears redo stack
-      await this.saveSnapshot(boardId);
+      // C1: Capture pre-mutation state BEFORE the DB write
+      const preSnapshot = await this.readCurrentSnapshot(boardId);
 
       await prisma.element.delete({ where: { id: elementId } });
 
+      // C1: Save snapshot only on DB success; Redis failure is non-fatal
+      try {
+        await this.saveSnapshot(boardId, userId, preSnapshot);
+      } catch (redisErr) {
+        console.error('Snapshot save failed (non-fatal):', redisErr);
+      }
+
+      // L1: Trim history sorted set to last 50 entries
       await redis.zadd(
         `history:${boardId}:${userId}`,
         Date.now(),
         JSON.stringify({ action: 'delete', elementId, element })
       );
+      await redis.zremrangebyrank(`history:${boardId}:${userId}`, 0, -51);
 
       await redis.xadd(
         `events:board:${boardId}`,
@@ -256,6 +390,12 @@ export class ElementEvents {
   async handleUndo(socket: Socket, io: any, data: UndoRedoData) {
     const { boardId, userId } = data;
 
+    // Lua script: atomically read and pop the first snapshot in one operation
+    const luaAtomicPop = `
+      local val = redis.call('lindex', KEYS[1], 0)
+      if val then redis.call('lpop', KEYS[1]) end
+      return val`;
+
     try {
       const hasAccess = await this.checkBoardAccess(boardId, userId, 'EDITOR');
       if (!hasAccess) {
@@ -263,37 +403,29 @@ export class ElementEvents {
         return;
       }
 
-      const snapshotStr = await redis.lindex(`snapshots:${boardId}`, 0);
+      // C2: User-namespaced undo key
+      const snapshotStr = await redis.eval(luaAtomicPop, 1, `snapshots:${boardId}:${userId}`) as string | null;
       if (!snapshotStr) {
-        // Nothing to undo — emit empty snapshot so frontend stays in sync
         return;
       }
 
-      // Save current state to redo stack before restoring
-      const currentElements = await prisma.element.findMany({
-        where: { boardId },
-        orderBy: { zIndex: 'asc' },
-      });
-      const currentSnapshot = currentElements.map(el => ({
-        id: el.id,
-        boardId: el.boardId,
-        type: el.type,
-        properties: el.properties,
-        zIndex: el.zIndex,
-        createdBy: el.createdBy,
-      }));
-      await redis.lpush(`redo:${boardId}`, JSON.stringify(currentSnapshot));
-      await redis.ltrim(`redo:${boardId}`, 0, 49);
-
-      // Pop undo snapshot
-      await redis.lpop(`snapshots:${boardId}`);
+      // Save current state to user's redo stack before restoring
+      const currentSnapshot = await this.readCurrentSnapshot(boardId);
+      // C2: User-namespaced redo key
+      await redis.lpush(`redo:${boardId}:${userId}`, JSON.stringify(currentSnapshot));
+      await redis.ltrim(`redo:${boardId}:${userId}`, 0, 49);
 
       const snapshot: any[] = JSON.parse(snapshotStr);
       await this.restoreSnapshot(boardId, snapshot);
 
       io.to(`board:${boardId}`).emit('element:snapshot', snapshot);
 
-      console.log(`↩️  Undo on board ${boardId}: restored ${snapshot.length} elements`);
+      // C3: Emit actual stack depths back to the originating socket
+      const undoDepth = await redis.llen(`snapshots:${boardId}:${userId}`);
+      const redoDepth = await redis.llen(`redo:${boardId}:${userId}`);
+      socket.emit('history:state', { undoDepth, redoDepth });
+
+      console.log(`↩️  Undo on board ${boardId} by ${userId}: restored ${snapshot.length} elements`);
     } catch (error) {
       console.error('Error handling undo:', error);
       socket.emit('error', { message: 'Failed to undo' });
@@ -303,6 +435,12 @@ export class ElementEvents {
   async handleRedo(socket: Socket, io: any, data: UndoRedoData) {
     const { boardId, userId } = data;
 
+    // Lua script: atomically read and pop the first redo snapshot
+    const luaAtomicPop = `
+      local val = redis.call('lindex', KEYS[1], 0)
+      if val then redis.call('lpop', KEYS[1]) end
+      return val`;
+
     try {
       const hasAccess = await this.checkBoardAccess(boardId, userId, 'EDITOR');
       if (!hasAccess) {
@@ -310,36 +448,33 @@ export class ElementEvents {
         return;
       }
 
-      const redoStr = await redis.lindex(`redo:${boardId}`, 0);
+      // C2: User-namespaced redo key
+      const redoStr = await redis.eval(luaAtomicPop, 1, `redo:${boardId}:${userId}`) as string | null;
       if (!redoStr) {
         return;
       }
 
-      // Save current state back to undo stack before applying redo
-      const currentElements = await prisma.element.findMany({
-        where: { boardId },
-        orderBy: { zIndex: 'asc' },
-      });
-      const currentSnapshot = currentElements.map(el => ({
-        id: el.id,
-        boardId: el.boardId,
-        type: el.type,
-        properties: el.properties,
-        zIndex: el.zIndex,
-        createdBy: el.createdBy,
-      }));
-      await redis.lpush(`snapshots:${boardId}`, JSON.stringify(currentSnapshot));
-      await redis.ltrim(`snapshots:${boardId}`, 0, 49);
-
-      // Pop redo snapshot
-      await redis.lpop(`redo:${boardId}`);
+      // H4: Save current state back to undo stack; abort redo if lpush fails
+      const currentSnapshot = await this.readCurrentSnapshot(boardId);
+      // C2: User-namespaced undo key
+      const pushed = await redis.lpush(`snapshots:${boardId}:${userId}`, JSON.stringify(currentSnapshot));
+      if (!pushed) {
+        socket.emit('error', { message: 'Failed to redo: could not save undo state' });
+        return;
+      }
+      await redis.ltrim(`snapshots:${boardId}:${userId}`, 0, 49);
 
       const snapshot: any[] = JSON.parse(redoStr);
       await this.restoreSnapshot(boardId, snapshot);
 
       io.to(`board:${boardId}`).emit('element:snapshot', snapshot);
 
-      console.log(`↪️  Redo on board ${boardId}: restored ${snapshot.length} elements`);
+      // C3: Emit actual stack depths back to the originating socket
+      const undoDepth = await redis.llen(`snapshots:${boardId}:${userId}`);
+      const redoDepth = await redis.llen(`redo:${boardId}:${userId}`);
+      socket.emit('history:state', { undoDepth, redoDepth });
+
+      console.log(`↪️  Redo on board ${boardId} by ${userId}: restored ${snapshot.length} elements`);
     } catch (error) {
       console.error('Error handling redo:', error);
       socket.emit('error', { message: 'Failed to redo' });
@@ -357,8 +492,17 @@ export class ElementEvents {
         return;
       }
 
-      await this.saveSnapshot(boardId);
+      // C1: Capture pre-mutation state BEFORE the DB write
+      const preSnapshot = await this.readCurrentSnapshot(boardId);
+
       await prisma.element.deleteMany({ where: { boardId } });
+
+      // C1: Save snapshot only on DB success; Redis failure is non-fatal
+      try {
+        await this.saveSnapshot(boardId, userId, preSnapshot);
+      } catch (redisErr) {
+        console.error('Snapshot save failed (non-fatal):', redisErr);
+      }
 
       io.to(`board:${boardId}`).emit('board:cleared');
       console.log(`🗑️  Board ${boardId} cleared by ${userId}`);
@@ -373,7 +517,7 @@ export class ElementEvents {
   private async checkBoardAccess(
     boardId: string,
     userId: string,
-    _requiredRole: string
+    requiredRole: string
   ): Promise<boolean> {
     const board = await prisma.board.findFirst({
       where: {
@@ -384,7 +528,7 @@ export class ElementEvents {
             collaborators: {
               some: {
                 userId,
-                role: { in: ['EDITOR', 'ADMIN'] },
+                role: { in: [requiredRole as any, 'ADMIN'] },
               },
             },
           },

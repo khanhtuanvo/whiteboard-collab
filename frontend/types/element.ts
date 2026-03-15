@@ -28,6 +28,15 @@ export interface Element {
   };
   zIndex: number;
   createdBy: string;
-  createdAt: string;
-  updatedAt: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** Converts a raw API/WebSocket JSON response into a typed Element with proper Date instances. */
+export function deserializeElement(raw: any): Element {
+  return {
+    ...raw,
+    createdAt: new Date(raw.createdAt),
+    updatedAt: new Date(raw.updatedAt),
+  };
 }

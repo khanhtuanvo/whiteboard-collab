@@ -1,2 +1,11 @@
 plan.md
 .env
+
+# Private keys - NEVER commit these!
+*.pem
+*.pkey
+*.key
+
+# Windows Zone Identifier files
+*.pem:Zone.Identifier
+*:Zone.Identifier

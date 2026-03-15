@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import { getSocket } from '@/lib/socket';
-import { Element, ElementType } from '@/types/element';
+import { Element, ElementType, deserializeElement } from '@/types/element';
 import { ActiveUser } from '@/store/boardStore';
 
 interface UseWebSocketOptions {
@@ -18,6 +18,8 @@ interface UseWebSocketOptions {
   onUserLeft: (userId: string) => void;
   onCursorUpdate: (userId: string, x: number, y: number) => void;
   onBoardCleared?: () => void;
+  /** C3: Called when server reports updated undo/redo stack depths */
+  onHistoryState?: (undoDepth: number, redoDepth: number) => void;
 }
 
 export function useWebSocket({
@@ -33,6 +35,7 @@ export function useWebSocket({
   onUserLeft,
   onCursorUpdate,
   onBoardCleared,
+  onHistoryState,
 }: UseWebSocketOptions) {
   // Keep callbacks in refs so the effect never needs to re-run when they change
   const onElementCreatedRef = useRef(onElementCreated);
@@ -44,6 +47,7 @@ export function useWebSocket({
   const onUserLeftRef = useRef(onUserLeft);
   const onCursorUpdateRef = useRef(onCursorUpdate);
   const onBoardClearedRef = useRef(onBoardCleared);
+  const onHistoryStateRef = useRef(onHistoryState);
 
   useEffect(() => { onElementCreatedRef.current = onElementCreated; });
   useEffect(() => { onElementUpdatedRef.current = onElementUpdated; });
@@ -54,6 +58,7 @@ export function useWebSocket({
   useEffect(() => { onUserLeftRef.current = onUserLeft; });
   useEffect(() => { onCursorUpdateRef.current = onCursorUpdate; });
   useEffect(() => { onBoardClearedRef.current = onBoardCleared; });
+  useEffect(() => { onHistoryStateRef.current = onHistoryState; });
 
   useEffect(() => {
     // Don't connect if user isn't authenticated yet
@@ -82,7 +87,7 @@ export function useWebSocket({
     };
 
     const handleElementCreated = (element: Element) => {
-      onElementCreatedRef.current(element);
+      onElementCreatedRef.current(deserializeElement(element));
     };
 
     const handleElementUpdated = (data: { id: string; properties: Record<string, unknown> }) => {
@@ -94,11 +99,15 @@ export function useWebSocket({
     };
 
     const handleSnapshot = (elements: Element[]) => {
-      onSnapshotRef.current(elements);
+      onSnapshotRef.current(elements.map(deserializeElement));
     };
 
     const handleBoardCleared = () => {
       onBoardClearedRef.current?.();
+    };
+
+    const handleHistoryState = (data: { undoDepth: number; redoDepth: number }) => {
+      onHistoryStateRef.current?.(data.undoDepth, data.redoDepth);
     };
 
     // room:users carries the full active-user list; replaces the piecemeal
@@ -117,6 +126,7 @@ export function useWebSocket({
     socket.on('element:deleted', handleElementDeleted);
     socket.on('element:snapshot', handleSnapshot);
     socket.on('board:cleared', handleBoardCleared);
+    socket.on('history:state', handleHistoryState);
 
     return () => {
       socket.emit('board:leave', { boardId });
@@ -130,6 +140,7 @@ export function useWebSocket({
       socket.off('element:deleted', handleElementDeleted);
       socket.off('element:snapshot', handleSnapshot);
       socket.off('board:cleared', handleBoardCleared);
+      socket.off('history:state', handleHistoryState);
     };
   }, [boardId, userName, userColor]);
 
@@ -137,8 +148,8 @@ export function useWebSocket({
     getSocket().emit('cursor:move', { boardId, x, y });
   }, [boardId]);
 
-  const emitCreateElement = useCallback((type: ElementType, properties: Record<string, unknown>) => {
-    getSocket().emit('element:create', { boardId, type, properties });
+  const emitCreateElement = useCallback((type: ElementType, properties: Record<string, unknown>, id?: string) => {
+    getSocket().emit('element:create', { boardId, type, properties, ...(id ? { id } : {}) });
   }, [boardId]);
 
   const emitUpdateElement = useCallback((elementId: string, properties: Record<string, unknown>) => {

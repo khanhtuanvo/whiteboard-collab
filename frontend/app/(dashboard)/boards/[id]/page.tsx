@@ -10,7 +10,7 @@ import { boardService } from '@/lib/boardService';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { useHistory } from '@/hooks/useHistory';
 import { Board } from '@/types/board';
-import { Element, ElementType } from '@/types/element';
+import { Element, ElementType, deserializeElement } from '@/types/element';
 import Toolbar from '@/components/board/Toolbar';
 import Cursor from '@/components/board/Cursor';
 import ColorPicker from '@/components/board/ColorPicker';
@@ -128,6 +128,12 @@ export default function BoardPage() {
     [updateUserCursor]
   );
 
+  // C3: Stable indirection ref breaks the circular dep between useWebSocket and useHistory
+  const historyStateSetterRef = useRef<(undoDepth: number, redoDepth: number) => void>(() => {});
+  const stableHistoryStateCallback = useCallback((u: number, r: number) => {
+    historyStateSetterRef.current(u, r);
+  }, []);
+
   const { emitCursorMove, emitCreateElement, emitUpdateElement, emitLiveUpdateElement, emitDeleteElement, emitUndo, emitRedo, emitClearBoard } =
     useWebSocket({
       boardId,
@@ -142,13 +148,20 @@ export default function BoardPage() {
       onUserLeft: handleUserLeft,
       onCursorUpdate: handleCursorUpdate,
       onBoardCleared: handleBoardCleared,
+      onHistoryState: stableHistoryStateCallback,
     });
 
-  const { undo, redo, recordAction, canUndo, canRedo } = useHistory({
+  const { undo, redo, setHistoryState, canUndo, canRedo } = useHistory({
     boardId,
     emitUndo,
     emitRedo,
+    onBeforeUndoRedo: useCallback(() => {
+      setSelectedElementId(null);
+      canvasRef.current?.clearSelection();
+    }, []),
   });
+  // Wire the indirection ref to the actual setter from useHistory
+  historyStateSetterRef.current = setHistoryState;
 
   // ─── Load board + elements ──────────────────────────────────────────────────
   useEffect(() => {
@@ -169,7 +182,7 @@ export default function BoardPage() {
           boardService.getBoardElements(boardId),
         ]);
         setBoard(boardData);
-        setElements(elementsData);
+        setElements(elementsData.map(deserializeElement));
 
         // Mark as initialized and replay any events that arrived during the fetch,
         // skipping duplicates whose ID is already present in elementsData.
@@ -210,10 +223,9 @@ export default function BoardPage() {
   const handleElementCreate = useCallback(
     (element: Partial<Element>) => {
       if (isReadOnly || !element.type || !element.properties) return;
-      emitCreateElement(element.type as ElementType, element.properties as Record<string, unknown>);
-      recordAction();
+      emitCreateElement(element.type as ElementType, element.properties as Record<string, unknown>, element.id);
     },
-    [emitCreateElement, recordAction, isReadOnly]
+    [emitCreateElement, isReadOnly]
   );
 
   const handleElementUpdate = useCallback(
@@ -224,9 +236,8 @@ export default function BoardPage() {
       if (updates.zIndex !== undefined) payload.zIndex = updates.zIndex;
       if (Object.keys(payload).length === 0) return;
       emitUpdateElement(id, payload);
-      recordAction();
     },
-    [emitUpdateElement, recordAction, isReadOnly]
+    [emitUpdateElement, isReadOnly]
   );
 
   // Live drag updates: broadcast position for collaboration but do NOT save a snapshot.
@@ -249,9 +260,8 @@ export default function BoardPage() {
       removeElement(id);
       emitDeleteElement(id);
       setSelectedElementId(prev => (prev === id ? null : prev));
-      recordAction();
     },
-    [removeElement, emitDeleteElement, recordAction, isReadOnly]
+    [removeElement, emitDeleteElement, isReadOnly]
   );
 
   const handleClearAll = useCallback(() => {
@@ -429,7 +439,7 @@ export default function BoardPage() {
           onSelectionChange={setSelectedElementId}
           onZoomChange={setZoomLevel}
           onToolReset={() => setSelectedTool('select')}
-          onGestureEnd={recordAction}
+          onGestureEnd={undefined}
         />
 
         {/* Remote cursors */}

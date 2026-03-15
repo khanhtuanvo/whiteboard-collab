@@ -22,6 +22,7 @@ export interface CanvasHandle {
   exportImage: () => void;
   exportSVG: () => void;
   deleteSelected: () => void;
+  clearSelection: () => void;
 }
 
 export interface CanvasProps {
@@ -72,8 +73,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
   // Tracks an element whose group was removed for in-canvas sticky editing
   const editingStickyIdRef = useRef<string | null>(null);
 
-  // Tracks the ElementType of the element being created so we can auto-select it on arrival
-  const pendingSelectTypeRef = useRef<ElementType | null>(null);
+  // Tracks the optimistic UUID of the element just created locally so we can auto-select it on arrival
+  const pendingSelectIdRef = useRef<string | null>(null);
 
   // Keep latest prop values in refs so stable callbacks never go stale
   const selectedToolRef = useRef(selectedTool);
@@ -112,17 +113,22 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     };
 
     switch (type) {
-      case ElementType.RECTANGLE:
+      case ElementType.RECTANGLE: {
+        const rScaleX = properties.scaleX ?? 1;
+        const rScaleY = properties.scaleY ?? 1;
         return new fabric.Rect({
           ...base,
           left: properties.x,
           top: properties.y,
-          width: properties.width ?? 100,
-          height: properties.height ?? 100,
+          width: (properties.width ?? 100) / Math.abs(rScaleX),
+          height: (properties.height ?? 100) / Math.abs(rScaleY),
+          scaleX: rScaleX,
+          scaleY: rScaleY,
           fill: properties.fill ?? '#3b82f6',
           stroke: properties.stroke,
           strokeWidth: properties.strokeWidth ?? 0,
         });
+      }
 
       case ElementType.CIRCLE:
         return new fabric.Circle({
@@ -130,6 +136,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
           left: properties.x,
           top: properties.y,
           radius: properties.radius ?? 50,
+          scaleX: properties.scaleX ?? 1,
+          scaleY: properties.scaleY ?? 1,
           fill: properties.fill ?? '#10b981',
           stroke: properties.stroke,
           strokeWidth: properties.strokeWidth ?? 0,
@@ -145,8 +153,10 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         });
 
       case ElementType.STICKY_NOTE: {
-        const w = properties.width ?? 200;
-        const h = properties.height ?? 200;
+        const snScaleX = properties.scaleX ?? 1;
+        const snScaleY = properties.scaleY ?? 1;
+        const w = (properties.width ?? 200) / Math.abs(snScaleX);
+        const h = (properties.height ?? 200) / Math.abs(snScaleY);
         return new fabric.Group(
           [
             new fabric.Rect({
@@ -164,7 +174,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
               left: 10,
             }),
           ],
-          { ...base, left: properties.x, top: properties.y }
+          { ...base, left: properties.x, top: properties.y, scaleX: snScaleX, scaleY: snScaleY }
         );
       }
 
@@ -283,7 +293,6 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
           properties: { ...element.properties, text: newText },
         });
       }
-      onGestureEndRef.current?.();
       canvas.renderAll();
     });
   }, []);
@@ -430,11 +439,11 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         return;
     }
 
+    // Generate a client-side UUID so we can identify this element when it arrives back from the server
+    const optimisticId = crypto.randomUUID();
+    elementData.id = optimisticId;
+    pendingSelectIdRef.current = optimisticId;
     onElementCreateRef.current(elementData);
-    // Mark which type was just created so the sync effect can auto-select it on arrival
-    if (elementData.type !== undefined) {
-      pendingSelectTypeRef.current = elementData.type;
-    }
     onToolResetRef.current?.();
     isDrawingRef.current = false;
     drawStartRef.current = null;
@@ -449,13 +458,26 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       if (!elementId) return;
       const element = elementsRef.current.find(el => el.id === elementId);
       if (!element) return;
-      // For objects inside an ActiveSelection, calcTransformMatrix gives absolute position
-      const t = child.calcTransformMatrix();
+
+      // Objects inside an ActiveSelection have group-relative coordinates;
+      // use getBoundingRect() for absolute canvas coordinates.
+      // Standalone objects: left/top are already absolute top-left (originX defaults to 'left').
+      const isInGroup = (child as any).group?.type === 'activeSelection';
+      let absLeft: number, absTop: number;
+      if (isInGroup) {
+        const br = child.getBoundingRect();
+        absLeft = br.left;
+        absTop = br.top;
+      } else {
+        absLeft = child.left ?? 0;
+        absTop = child.top ?? 0;
+      }
+
       onElementUpdateRef.current(elementId, {
         properties: {
           ...element.properties,
-          x: t[4] - child.getScaledWidth() / 2,
-          y: t[5] - child.getScaledHeight() / 2,
+          x: absLeft,
+          y: absTop,
           width: child.getScaledWidth(),
           height: child.getScaledHeight(),
           scaleX: child.scaleX ?? 1,
@@ -469,8 +491,6 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     } else {
       emitUpdate(obj);
     }
-    // Gesture (drag / resize) ended — commit to history
-    onGestureEndRef.current?.();
   }, []);
 
   // ─── Init canvas once ────────────────────────────────────────────────────────
@@ -646,7 +666,6 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
           onElementUpdateRef.current(elementId, {
             properties: { ...element.properties, text: itext.text ?? '' },
           });
-          onGestureEndRef.current?.();
         });
         return;
       }
@@ -668,7 +687,10 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       canvas.remove(path);
       canvas.renderAll();
       const bounds = path.getBoundingRect();
+      const penOptimisticId = crypto.randomUUID();
+      pendingSelectIdRef.current = penOptimisticId;
       onElementCreateRef.current({
+        id: penOptimisticId,
         boardId: boardIdRef.current,
         type: ElementType.LINE,
         properties: {
@@ -680,7 +702,6 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         },
         zIndex: 0,
       });
-      pendingSelectTypeRef.current = ElementType.LINE;
       onToolResetRef.current?.();
     };
 
@@ -770,8 +791,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         if (obj) {
           canvas.add(obj);
           // Auto-select the element that was just created by the local user
-          if (pendingSelectTypeRef.current !== null && pendingSelectTypeRef.current === el.type) {
-            pendingSelectTypeRef.current = null;
+          if (pendingSelectIdRef.current !== null && pendingSelectIdRef.current === el.id) {
+            pendingSelectIdRef.current = null;
             canvas.setActiveObject(obj);
             onSelectionChangeRef.current?.(el.id);
             if (el.type === ElementType.TEXT) {
@@ -785,7 +806,6 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
                 onElementUpdateRef.current(el.id, {
                   properties: { ...element.properties, text: itext.text ?? '' },
                 });
-                onGestureEndRef.current?.();
               });
             } else if (el.type === ElementType.STICKY_NOTE) {
               // Defer one frame so the object is fully settled on the canvas
@@ -804,22 +824,50 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
           const innerRect = (existing as fabric.Group)
             .getObjects()
             .find(o => o.type === 'rect') as fabric.Rect | undefined;
+          // 1. Style on inner rect first
           const newFill = p.fill ?? p.color;
           if (innerRect && newFill !== undefined) innerRect.set('fill', newFill);
           if (p.strokeWidth !== undefined) innerRect?.set('strokeWidth', p.strokeWidth);
-          // Position sync for groups (moved by remote user)
+          // 2. Position
           if (p.x !== undefined) existing.set('left', p.x);
           if (p.y !== undefined) existing.set('top', p.y);
+          // 3. Scale — must be applied BEFORE dimensions so the division below uses the new scale
+          if (p.scaleX !== undefined) existing.set('scaleX', p.scaleX);
+          if (p.scaleY !== undefined) existing.set('scaleY', p.scaleY);
+          // 4. Base dimensions (divided by the now-current scale)
+          if (p.width !== undefined) {
+            (existing as any).set('width', p.width / Math.abs(p.scaleX ?? 1));
+          }
+          if (p.height !== undefined) {
+            (existing as any).set('height', p.height / Math.abs(p.scaleY ?? 1));
+          }
+          // 5. Always last
+          existing.setCoords();
         } else {
+          // 1. Style
           if (p.fill !== undefined) existing.set('fill', p.fill);
           if (p.stroke !== undefined) existing.set('stroke', p.stroke);
           if (p.strokeWidth !== undefined) existing.set('strokeWidth', p.strokeWidth);
           if (p.fontSize !== undefined && (existing as any).fontSize !== undefined) {
             (existing as any).set('fontSize', p.fontSize);
           }
-          // Position sync for all non-group objects (moved by remote user)
+          // 2. Position
           if (p.x !== undefined) existing.set('left', p.x);
           if (p.y !== undefined) existing.set('top', p.y);
+          // 3. Scale — must be applied BEFORE dimensions
+          if (p.scaleX !== undefined) existing.set('scaleX', p.scaleX);
+          if (p.scaleY !== undefined) existing.set('scaleY', p.scaleY);
+          // 4. Base dimensions for rects (divided by the now-current scale)
+          if (existing.type === 'rect') {
+            if (p.width !== undefined) {
+              (existing as any).set('width', p.width / Math.abs(p.scaleX ?? 1));
+            }
+            if (p.height !== undefined) {
+              (existing as any).set('height', p.height / Math.abs(p.scaleY ?? 1));
+            }
+          }
+          // 5. Always last
+          existing.setCoords();
         }
       }
     });
@@ -860,6 +908,22 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         .filter(Boolean) as string[];
       if (ids.length === 0) return;
       ids.forEach(id => onElementDeleteRef.current(id));
+      canvas.discardActiveObject();
+      canvas.renderAll();
+    },
+    clearSelection() {
+      const canvas = fabricCanvasRef.current;
+      if (!canvas) return;
+      // Cancel any in-progress shape creation
+      isDrawingRef.current = false;
+      drawStartRef.current = null;
+      // Exit text editing if an object is currently being edited
+      const activeObj = canvas.getActiveObject();
+      if (activeObj && (activeObj as any).isEditing) {
+        (activeObj as fabric.IText).exitEditing();
+      }
+      // Clear sticky note inline-edit state
+      editingStickyIdRef.current = null;
       canvas.discardActiveObject();
       canvas.renderAll();
     },
