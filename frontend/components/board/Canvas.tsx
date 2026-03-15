@@ -478,8 +478,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
           ...element.properties,
           x: absLeft,
           y: absTop,
-          width: child.getScaledWidth(),
-          height: child.getScaledHeight(),
+          width: child.width!,        // raw base — never pre-multiplied by scale
+          height: child.height!,      // raw base — never pre-multiplied by scale
           scaleX: child.scaleX ?? 1,
           scaleY: child.scaleY ?? 1,
         },
@@ -590,9 +590,9 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         return;
       }
 
-      // Don't intercept Delete/Backspace while typing in inputs
+      // Don't intercept Delete/Backspace while an interactive element is focused
       const tag = (document.activeElement as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(tag)) return;
 
       // Delete / Backspace → delete selected element(s)
       if (e.key === 'Delete' || e.key === 'Backspace') {

@@ -25,6 +25,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const menuRef = useRef<HTMLDivElement>(null);
 
   const handleLogout = () => {
+    localStorage.removeItem('cursorColor');
     logout();
     router.push('/login');
   };
