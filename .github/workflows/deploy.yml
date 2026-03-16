@@ -4,14 +4,7 @@ on:
   push:
     branches: [ main ]
 
-env:
-  AWS_REGION: ${{ vars.AWS_REGION }}
-  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com
-  BACKEND_IMAGE: whiteboard-backend
-  FRONTEND_IMAGE: whiteboard-frontend
-
 jobs:
-  # ── 1. Lint + test ───────────────────────────────────────────────────────────
   test:
     runs-on: ubuntu-latest
     env:
@@ -20,58 +13,15 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-node@v4
-      with: { node-version: '20' }
+      with: { node-version: '24' }
     - run: cd backend && npm ci
     - run: cd backend && npx prisma generate
     - run: cd backend && npx tsc --noEmit
     - run: cd backend && npx eslint 'src/**/*.ts' --max-warnings 0
     - run: cd backend && npx jest
 
-  # ── 2. Build Docker images and push to ECR ───────────────────────────────────
-  build:
-    needs: test
-    runs-on: ubuntu-latest
-    outputs:
-      backend_tag: ${{ steps.meta.outputs.backend_tag }}
-      frontend_tag: ${{ steps.meta.outputs.frontend_tag }}
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ vars.AWS_REGION }}
-
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2
-
-    - name: Set image tags
-      id: meta
-      run: |
-        SHORT_SHA=${GITHUB_SHA::7}
-        echo "backend_tag=${{ env.ECR_REGISTRY }}/${{ env.BACKEND_IMAGE }}:${SHORT_SHA}" >> $GITHUB_OUTPUT
-        echo "frontend_tag=${{ env.ECR_REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${SHORT_SHA}" >> $GITHUB_OUTPUT
-
-    - name: Build and push backend image
-      run: |
-        docker build -f docker/Dockerfile.backend -t ${{ steps.meta.outputs.backend_tag }} ./backend
-        docker push ${{ steps.meta.outputs.backend_tag }}
-        docker tag ${{ steps.meta.outputs.backend_tag }} ${{ env.ECR_REGISTRY }}/${{ env.BACKEND_IMAGE }}:latest
-        docker push ${{ env.ECR_REGISTRY }}/${{ env.BACKEND_IMAGE }}:latest
-
-    - name: Build and push frontend image
-      run: |
-        docker build -f docker/Dockerfile.frontend -t ${{ steps.meta.outputs.frontend_tag }} ./frontend
-        docker push ${{ steps.meta.outputs.frontend_tag }}
-        docker tag ${{ steps.meta.outputs.frontend_tag }} ${{ env.ECR_REGISTRY }}/${{ env.FRONTEND_IMAGE }}:latest
-        docker push ${{ env.ECR_REGISTRY }}/${{ env.FRONTEND_IMAGE }}:latest
-
-  # ── 3. Deploy to EC2 via SSH ──────────────────────────────────────────────────
   deploy:
-    needs: build
+    needs: test
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -83,19 +33,52 @@ jobs:
         username: ${{ secrets.EC2_USER }}
         key: ${{ secrets.EC2_SSH_KEY }}
         script: |
-          # Authenticate with ECR
-          aws ecr get-login-password --region ${{ vars.AWS_REGION }} \
-            | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
-
           cd ~/whiteboard-collab
 
-          # Pull latest images
-          docker pull ${{ env.ECR_REGISTRY }}/${{ env.BACKEND_IMAGE }}:latest
-          docker pull ${{ env.ECR_REGISTRY }}/${{ env.FRONTEND_IMAGE }}:latest
+          # Pull latest code
+          git pull origin main
 
-          # Rolling restart — zero-downtime if nginx is handling traffic
-          docker compose pull
-          docker compose up --detach --remove-orphans
+          # Rebuild and restart containers
+          docker compose up --build --detach --remove-orphans
 
-          # Remove dangling images to keep disk clean
+          # Clean up
           docker image prune -f
+```
+
+**What changed:** no ECR, no AWS credentials, no image registry at all. GitHub Actions SSHes in, pulls the code, Docker builds on the EC2 itself.
+
+---
+
+## The Tradeoff Explained
+
+| | ECR approach | Build on EC2 |
+|---|---|---|
+| Build time | Fast (pre-built image) | Slower (builds on server) |
+| Downtime during deploy | ~0s | 30–60s |
+| Complexity | High | Low |
+| Cost | ~$1–2/mo | $0 |
+| Good for learning | Registry/IAM concepts | Simpler, faster to ship |
+
+For a **portfolio project with no real users**, 30 seconds of downtime on deploy is completely fine.
+
+---
+
+## When to Add ECR Back
+
+Add it when you hit one of these:
+```
+✅ You have 2+ servers and need them to pull the same image
+✅ Build on EC2 takes too long (>10 min) and slows your workflow  
+✅ You need to roll back to a specific image version quickly
+✅ You're interviewing and want to demo the full AWS pipeline
+```
+
+At that point, the pipeline you already have is exactly right — just uncomment it.
+
+---
+
+## What to Store in GitHub Secrets (simplified)
+```
+EC2_HOST        → your EC2 public IP
+EC2_USER        → ubuntu
+EC2_SSH_KEY     → your private key (the .pem contents)
