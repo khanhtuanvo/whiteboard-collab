@@ -1,0 +1,101 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com
+  BACKEND_IMAGE: whiteboard-backend
+  FRONTEND_IMAGE: whiteboard-frontend
+
+jobs:
+  # ── 1. Lint + test ───────────────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: mysql://test:test@localhost:3306/test_db
+      JWT_SECRET: ci-test-secret
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with: { node-version: '20' }
+    - run: cd backend && npm ci
+    - run: cd backend && npx prisma generate
+    - run: cd backend && npx tsc --noEmit
+    - run: cd backend && npx eslint 'src/**/*.ts' --max-warnings 0
+    - run: cd backend && npx jest
+
+  # ── 2. Build Docker images and push to ECR ───────────────────────────────────
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      backend_tag: ${{ steps.meta.outputs.backend_tag }}
+      frontend_tag: ${{ steps.meta.outputs.frontend_tag }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Set image tags
+      id: meta
+      run: |
+        SHORT_SHA=${GITHUB_SHA::7}
+        echo "backend_tag=${{ env.ECR_REGISTRY }}/${{ env.BACKEND_IMAGE }}:${SHORT_SHA}" >> $GITHUB_OUTPUT
+        echo "frontend_tag=${{ env.ECR_REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+    - name: Build and push backend image
+      run: |
+        docker build -f docker/Dockerfile.backend -t ${{ steps.meta.outputs.backend_tag }} ./backend
+        docker push ${{ steps.meta.outputs.backend_tag }}
+        docker tag ${{ steps.meta.outputs.backend_tag }} ${{ env.ECR_REGISTRY }}/${{ env.BACKEND_IMAGE }}:latest
+        docker push ${{ env.ECR_REGISTRY }}/${{ env.BACKEND_IMAGE }}:latest
+
+    - name: Build and push frontend image
+      run: |
+        docker build -f docker/Dockerfile.frontend -t ${{ steps.meta.outputs.frontend_tag }} ./frontend
+        docker push ${{ steps.meta.outputs.frontend_tag }}
+        docker tag ${{ steps.meta.outputs.frontend_tag }} ${{ env.ECR_REGISTRY }}/${{ env.FRONTEND_IMAGE }}:latest
+        docker push ${{ env.ECR_REGISTRY }}/${{ env.FRONTEND_IMAGE }}:latest
+
+  # ── 3. Deploy to EC2 via SSH ──────────────────────────────────────────────────
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Deploy to EC2
+      uses: appleboy/ssh-action@v1
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ${{ secrets.EC2_USER }}
+        key: ${{ secrets.EC2_SSH_KEY }}
+        script: |
+          # Authenticate with ECR
+          aws ecr get-login-password --region ${{ vars.AWS_REGION }} \
+            | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+          cd ~/whiteboard-collab
+
+          # Pull latest images
+          docker pull ${{ env.ECR_REGISTRY }}/${{ env.BACKEND_IMAGE }}:latest
+          docker pull ${{ env.ECR_REGISTRY }}/${{ env.FRONTEND_IMAGE }}:latest
+
+          # Rolling restart — zero-downtime if nginx is handling traffic
+          docker compose pull
+          docker compose up --detach --remove-orphans
+
+          # Remove dangling images to keep disk clean
+          docker image prune -f

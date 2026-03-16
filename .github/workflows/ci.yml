@@ -1,4 +1,4 @@
-name: CI pipeline 
+name: CI pipeline
 
 on:
   push:
@@ -14,8 +14,13 @@ jobs:
       JWT_SECRET: ci-test-secret
     steps:
     - uses: actions/checkout@v4
-    - uses: actions/setup-node@v4 
+    - uses: actions/setup-node@v4
       with: { node-version: '20' }
-    - run: cd backend && npm ci 
+    - run: cd backend && npm ci
     - run: cd backend && npx prisma generate
-    - run: cd backend && npx jest
+    - name: TypeScript type-check
+      run: cd backend && npx tsc --noEmit
+    - name: ESLint
+      run: cd backend && npx eslint 'src/**/*.ts' --max-warnings 0
+    - name: Jest
+      run: cd backend && npx jest
