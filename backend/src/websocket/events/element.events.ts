@@ -156,7 +156,7 @@ export class ElementEvents {
     const { boardId, userId, type, properties } = data;
 
     try {
-      const hasAccess = await this.checkBoardAccess(boardId, userId, 'EDITOR');
+      const hasAccess = await this.checkBoardAccess(boardId, userId, Role.EDITOR);
       if (!hasAccess) {
         socket.emit('error', { message: 'Permission denied' });
         return;
@@ -541,7 +541,7 @@ export class ElementEvents {
             collaborators: {
               some: {
                 userId,
-                role: { in: [requiredRole as any, 'ADMIN'] },
+                role: { in: [requiredRole, Role.ADMIN] },
               },
             },
           },

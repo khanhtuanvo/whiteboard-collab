@@ -10,12 +10,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       DATABASE_URL: mysql://test:test@localhost:3306/test_db
       JWT_SECRET: ci-test-secret
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-node@v4
-      with: { node-version: '20' }
+      with: { node-version: '24' }
     - run: cd backend && npm ci
     - run: cd backend && npx prisma generate
     - name: TypeScript type-check
