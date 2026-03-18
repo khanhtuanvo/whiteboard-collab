@@ -83,7 +83,7 @@ app.patch('/api/auth/profile', authMiddleware, (req, res) => authController.upda
 
 // Protected route example
 app.get('/api/test-protected', authMiddleware, (req, res) => {
-  res.json({ message: 'This is a protected route', userId: (req as any).userId });
+  res.json({ message: 'This is a protected route', userId: req.userId });
 });
 
 // Board routes (protected)

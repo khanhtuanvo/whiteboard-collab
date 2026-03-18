@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { BoardService } from '../services/board.service';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 
 const boardService = new BoardService();
 
@@ -17,13 +18,13 @@ const addCollaboratorSchema = z.object({
 const updateBoardSchema = z.object({
   title: z.string().min(1).max(255).optional(),
   isPublic: z.boolean().optional(),
-  settings: z.any().optional()
+  settings: z.record(z.string(), z.unknown()).optional()
 });
 
 export class BoardController {
   async getBoards(req: Request, res: Response) {
     try {
-      const userId = (req as any).userId;
+      const userId = req.userId!;
       const boards = await boardService.getUserBoards(userId);
       res.json(boards);
     } catch (error) {
@@ -38,7 +39,7 @@ export class BoardController {
   async getBoard(req: Request, res: Response) {
     try {
       const id = req.params.id as string;
-      const userId = (req as any).userId;
+      const userId = req.userId!;
       const board = await boardService.getBoard(id, userId);
       res.json(board);
     } catch (error) {
@@ -49,7 +50,7 @@ export class BoardController {
 
   async createBoard(req: Request, res: Response) {
     try {
-      const userId = (req as any).userId;
+      const userId = req.userId!;
       const { title, isPublic } = createBoardSchema.parse(req.body);
       const board = await boardService.createBoard(title, userId, isPublic);
       res.status(201).json(board);
@@ -65,10 +66,14 @@ export class BoardController {
   async updateBoard(req: Request, res: Response) {
     try {
       const id = req.params.id as string;
-      const userId = (req as any).userId;
+      const userId = req.userId!;
       const data = updateBoardSchema.parse(req.body);
-      const board = await boardService.updateBoard(id, userId, data);
-      res.json(board);
+      const prismaData: Prisma.BoardUpdateInput = {
+        ...data,
+        settings: data.settings as Prisma.InputJsonValue
+      };
+      const board = await boardService.updateBoard(id, userId, prismaData);
+    res.json(board);
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ error: error.issues });
@@ -81,7 +86,7 @@ export class BoardController {
   async getBoardElements(req: Request, res: Response) {
     try {
       const id = req.params.id as string;
-      const userId = (req as any).userId;
+      const userId = req.userId!;
       const elements = await boardService.getBoardElements(id, userId);
       res.json(elements);
     } catch (error) {
@@ -93,9 +98,9 @@ export class BoardController {
   async addCollaborator(req: Request, res: Response) {
     try {
       const boardId = req.params.id as string;
-      const ownerId = (req as any).userId;
+      const ownerId = req.userId!;
       const { email, role } = addCollaboratorSchema.parse(req.body);
-      const collaborator = await boardService.addCollaborator(boardId, ownerId, email, role as any);
+      const collaborator = await boardService.addCollaborator(boardId, ownerId, email, role);
       res.status(201).json(collaborator);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -109,7 +114,7 @@ export class BoardController {
   async deleteBoard(req: Request, res: Response) {
     try {
       const id = req.params.id as string;
-      const userId = (req as any).userId;
+      const userId = req.userId!;
       await boardService.deleteBoard(id, userId);
       res.status(204).send();
     } catch (error) {

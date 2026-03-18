@@ -1,6 +1,6 @@
 import prisma from '../config/database';
 import { Role } from '@prisma/client';
-
+import { Prisma } from '@prisma/client';
 export class BoardService {
     async getUserBoards(userId: string) {
         const boards = await prisma.board.findMany({
@@ -71,7 +71,7 @@ export class BoardService {
         return board;
     }
 
-    async updateBoard(boardId: string, userId: string, data: any){
+    async updateBoard(boardId: string, userId: string, data: Prisma.BoardUpdateInput){
         const board = await prisma.board.findFirst({
             where: {
                 id: boardId,

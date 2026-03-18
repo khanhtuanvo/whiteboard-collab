@@ -64,8 +64,9 @@ export class AiService {
         });
 
         if (!response.ok) {
-            const err = await response.json().catch(() => ({ detail: 'ML service error' }));
-            throw new Error((err as any).detail || 'ML service error');
+            interface MLError { detail?: string }
+            const err = await response.json().catch((): MLError => ({ detail: 'ML service error' })) as MLError;
+            throw new Error(err.detail || 'ML service error');
         }
 
         const results = await response.json() as ClusterResult[];

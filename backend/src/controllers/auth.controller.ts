@@ -53,7 +53,7 @@ export class AuthController {
 
     async getProfile(req: Request, res: Response){
         try {
-            const userId = (req as any).userId;
+            const userId = req.userId!;
             const user = await authService.getProfile(userId);
             res.json(user);
         } catch (error) {
@@ -64,7 +64,7 @@ export class AuthController {
 
     async updateProfile(req: Request, res: Response){
         try {
-            const userId = (req as any).userId;
+            const userId = req.userId!;
             const data = updateProfileSchema.parse(req.body);
             const user = await authService.updateProfile(userId, data);
             res.json(user);

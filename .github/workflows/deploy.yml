@@ -43,42 +43,38 @@ jobs:
 
           # Clean up
           docker image prune -f
-```
+# ```
 
-**What changed:** no ECR, no AWS credentials, no image registry at all. GitHub Actions SSHes in, pulls the code, Docker builds on the EC2 itself.
+# **What changed:** no ECR, no AWS credentials, no image registry at all. GitHub Actions SSHes in, pulls the code, Docker builds on the EC2 itself.
 
----
+# ---
 
-## The Tradeoff Explained
+# ## The Tradeoff Explained
 
-| | ECR approach | Build on EC2 |
-|---|---|---|
-| Build time | Fast (pre-built image) | Slower (builds on server) |
-| Downtime during deploy | ~0s | 30–60s |
-| Complexity | High | Low |
-| Cost | ~$1–2/mo | $0 |
-| Good for learning | Registry/IAM concepts | Simpler, faster to ship |
+# | | ECR approach | Build on EC2 |
+# |---|---|---|
+# | Build time | Fast (pre-built image) | Slower (builds on server) |
+# | Downtime during deploy | ~0s | 30–60s |
+# | Complexity | High | Low |
+# | Cost | ~$1–2/mo | $0 |
+# | Good for learning | Registry/IAM concepts | Simpler, faster to ship |
 
-For a **portfolio project with no real users**, 30 seconds of downtime on deploy is completely fine.
-
----
+# For a **portfolio project with no real users**, 30 seconds of downtime on deploy is completely fine.
 
 ## When to Add ECR Back
 
-Add it when you hit one of these:
-```
-✅ You have 2+ servers and need them to pull the same image
-✅ Build on EC2 takes too long (>10 min) and slows your workflow  
-✅ You need to roll back to a specific image version quickly
-✅ You're interviewing and want to demo the full AWS pipeline
-```
+# Add it when you hit one of these:
+# ```
+# ✅ You have 2+ servers and need them to pull the same image
+# ✅ Build on EC2 takes too long (>10 min) and slows your workflow  
+# ✅ You need to roll back to a specific image version quickly
+# ✅ You're interviewing and want to demo the full AWS pipeline
+# ```
 
-At that point, the pipeline you already have is exactly right — just uncomment it.
-
----
+# At that point, the pipeline you already have is exactly right — just uncomment it.
 
 ## What to Store in GitHub Secrets (simplified)
-```
-EC2_HOST        → your EC2 public IP
-EC2_USER        → ubuntu
-EC2_SSH_KEY     → your private key (the .pem contents)
+# ```
+# EC2_HOST        → your EC2 public IP
+# EC2_USER        → ubuntu
+# EC2_SSH_KEY     → your private key (the .pem contents)

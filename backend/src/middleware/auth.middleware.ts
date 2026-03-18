@@ -16,7 +16,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
     }
 
     // Add userId to request object
-    (req as any).userId = decoded.userId;
+    req.userId = decoded.userId;
 
     next();
 }

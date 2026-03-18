@@ -4,6 +4,12 @@ import { BoardEvents } from './events/board.events';
 import { CursorEvents } from './events/cursor.events';
 import { ElementEvents } from './events/element.events';
 
+interface AuthenticatedSocket extends Socket {
+  data: {
+    userId: string;
+  };
+}
+
 const boardEvents = new BoardEvents();
 const cursorEvents = new CursorEvents();
 const elementEvents = new ElementEvents();
@@ -23,12 +29,12 @@ export function setupSocketHandlers(io: Server) {
     }
 
     // Attach userId to socket
-    (socket as any).userId = decoded.userId;
+    socket.data.userId = decoded.userId;
     next();
   });
 
   io.on('connection', (socket: Socket) => {
-    const userId = (socket as any).userId;
+    const userId = (socket as AuthenticatedSocket).data.userId;
     console.log(`🔌 User ${userId} connected (socket: ${socket.id})`);
 
     // Board events

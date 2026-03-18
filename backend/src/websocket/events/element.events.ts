@@ -1,10 +1,9 @@
-import { Socket } from 'socket.io';
+import { Socket, Server } from 'socket.io';
 import redis from '../../config/redis';
 import prisma from '../../config/database';
 import { v4 as uuidv4 } from 'uuid';
-import { ElementType } from '@prisma/client';
-import { z } from 'zod';
-
+import { ElementType, Role, Prisma } from '@prisma/client';
+import { z } from 'zod';  
 // Strict schema — rejects unknown keys to block prototype-pollution payloads.
 // Add fields here as the canvas feature set grows.
 const PropertiesSchema = z.object({
@@ -57,11 +56,14 @@ const PropertiesSchema = z.object({
   pathData: z.string().optional(),
 }).strict();
 
+
+type ElementProperties = z.infer<typeof PropertiesSchema>;
+
 interface CreateElementData {
   boardId: string;
   userId: string;
   type: string;
-  properties: any;
+  properties: Prisma.JsonValue;
   id?: string;
 }
 
@@ -69,8 +71,7 @@ interface UpdateElementData {
   boardId: string;
   elementId: string;
   userId: string;
-  properties: any;
-  /** When true this is an intermediate live-drag update — do NOT save a snapshot */
+  properties: ElementProperties;
   live?: boolean;
 }
 
@@ -80,16 +81,27 @@ interface DeleteElementData {
   userId: string;
 }
 
+
 interface UndoRedoData {
   boardId: string;
   userId: string;
 }
 
+interface ElementSnapshot {
+  id: string;
+  boardId: string;
+  type: string;
+  properties: Prisma.JsonValue;
+  zIndex: number;
+  createdBy: string;
+}
+
+
 export class ElementEvents {
   // ─── Snapshot helpers ────────────────────────────────────────────────────────
 
   /** Read all current board elements as a serialisable snapshot array. */
-  private async readCurrentSnapshot(boardId: string): Promise<any[]> {
+  private async readCurrentSnapshot(boardId: string): Promise<ElementSnapshot[]> {
     const elements = await prisma.element.findMany({
       where: { boardId },
       orderBy: { zIndex: 'asc' },
@@ -110,7 +122,7 @@ export class ElementEvents {
    * and wrapped in its own try/catch by the caller so Redis failures never surface
    * as DB errors.
    */
-  private async saveSnapshot(boardId: string, userId: string, snapshot: any[]): Promise<void> {
+  private async saveSnapshot(boardId: string, userId: string, snapshot: ElementSnapshot[]): Promise<void> {
     await redis.lpush(`snapshots:${boardId}:${userId}`, JSON.stringify(snapshot));
     await redis.ltrim(`snapshots:${boardId}:${userId}`, 0, 49);
     // Any new mutation clears this user's redo stack
@@ -119,7 +131,7 @@ export class ElementEvents {
 
   private async restoreSnapshot(
     boardId: string,
-    snapshot: any[]
+    snapshot: ElementSnapshot[]
   ): Promise<void> {
     await prisma.$transaction(async (tx) => {
       await tx.element.deleteMany({ where: { boardId } });
@@ -129,7 +141,7 @@ export class ElementEvents {
             id: el.id,
             boardId: el.boardId,
             type: el.type as ElementType,
-            properties: el.properties,
+            properties: (el.properties ?? Prisma.JsonNull) as Prisma.InputJsonValue | Prisma.NullTypes.JsonNull,  // ← cast here
             zIndex: el.zIndex ?? 0,
             createdBy: el.createdBy,
           })),
@@ -140,7 +152,7 @@ export class ElementEvents {
 
   // ─── CRUD handlers ───────────────────────────────────────────────────────────
 
-  async handleCreateElement(socket: Socket, io: any, data: CreateElementData) {
+  async handleCreateElement(socket: Socket, io: Server, data: CreateElementData) {
     const { boardId, userId, type, properties } = data;
 
     try {
@@ -187,7 +199,7 @@ export class ElementEvents {
             id: elementId,
             boardId,
             type: type as ElementType,
-            properties,
+            properties: properties as Prisma.InputJsonValue,
             zIndex: nextZ,
             createdBy: userId,
           },
@@ -222,9 +234,10 @@ export class ElementEvents {
       io.to(`board:${boardId}`).emit('element:created', element);
 
       console.log(`✅ Element ${elementId} created on board ${boardId}`);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error creating element:', error);
-      if (error?.code === 'P2002') {
+      const prismaError = error as { code?: string };
+      if (prismaError?.code === 'P2002') {
         socket.emit('error', { message: 'Element ID already exists' });
       } else {
         socket.emit('error', { message: 'Failed to create element' });
@@ -232,7 +245,7 @@ export class ElementEvents {
     }
   }
 
-  async handleUpdateElement(socket: Socket, io: any, data: UpdateElementData) {
+  async handleUpdateElement(socket: Socket, io: Server, data: UpdateElementData) {
     const { boardId, elementId, userId, properties, live } = data;
 
     try {
@@ -328,7 +341,7 @@ export class ElementEvents {
     }
   }
 
-  async handleDeleteElement(socket: Socket, io: any, data: DeleteElementData) {
+  async handleDeleteElement(socket: Socket, io: Server, data: DeleteElementData) {
     const { boardId, elementId, userId } = data;
 
     try {
@@ -387,7 +400,7 @@ export class ElementEvents {
 
   // ─── Undo / Redo ─────────────────────────────────────────────────────────────
 
-  async handleUndo(socket: Socket, io: any, data: UndoRedoData) {
+  async handleUndo(socket: Socket, io: Server, data: UndoRedoData) {
     const { boardId, userId } = data;
 
     // Lua script: atomically read and pop the first snapshot in one operation
@@ -415,7 +428,7 @@ export class ElementEvents {
       await redis.lpush(`redo:${boardId}:${userId}`, JSON.stringify(currentSnapshot));
       await redis.ltrim(`redo:${boardId}:${userId}`, 0, 49);
 
-      const snapshot: any[] = JSON.parse(snapshotStr);
+      const snapshot = JSON.parse(snapshotStr) as ElementSnapshot[];
       await this.restoreSnapshot(boardId, snapshot);
 
       io.to(`board:${boardId}`).emit('element:snapshot', snapshot);
@@ -432,7 +445,7 @@ export class ElementEvents {
     }
   }
 
-  async handleRedo(socket: Socket, io: any, data: UndoRedoData) {
+  async handleRedo(socket: Socket, io: Server, data: UndoRedoData) {
     const { boardId, userId } = data;
 
     // Lua script: atomically read and pop the first redo snapshot
@@ -464,7 +477,7 @@ export class ElementEvents {
       }
       await redis.ltrim(`snapshots:${boardId}:${userId}`, 0, 49);
 
-      const snapshot: any[] = JSON.parse(redoStr);
+      const snapshot = JSON.parse(redoStr) as ElementSnapshot[];
       await this.restoreSnapshot(boardId, snapshot);
 
       io.to(`board:${boardId}`).emit('element:snapshot', snapshot);
@@ -483,7 +496,7 @@ export class ElementEvents {
 
   // ─── Clear board ─────────────────────────────────────────────────────────────
 
-  async handleClearBoard(socket: Socket, io: any, data: { boardId: string; userId: string }) {
+  async handleClearBoard(socket: Socket, io: Server, data: { boardId: string; userId: string }) {
     const { boardId, userId } = data;
     try {
       const hasAccess = await this.checkBoardAccess(boardId, userId, 'EDITOR');
@@ -517,7 +530,7 @@ export class ElementEvents {
   private async checkBoardAccess(
     boardId: string,
     userId: string,
-    requiredRole: string
+    requiredRole: Role
   ): Promise<boolean> {
     const board = await prisma.board.findFirst({
       where: {

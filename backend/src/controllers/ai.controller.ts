@@ -17,7 +17,7 @@ export class AiController {
     async clusterElements(req: Request, res: Response) {
         try {
             const boardId = req.params.id as string;
-            const userId = (req as any).userId;
+            const userId = req.userId!;
             const elements = clusterInputSchema.parse(req.body);
 
             if (elements.length < 3) {
