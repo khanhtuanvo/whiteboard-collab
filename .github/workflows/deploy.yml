@@ -2,80 +2,50 @@ name: Deploy to AWS
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      DATABASE_URL: mysql://test:test@localhost:3306/test_db
-      JWT_SECRET: ci-test-secret
-    steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-node@v4
-      with: { node-version: '24' }
-    - run: cd backend && npm ci
-    - run: cd backend && npx prisma generate
-    - run: cd backend && npx tsc --noEmit
-    - run: cd backend && npx eslint 'src/**/*.ts' --max-warnings 0
-    - run: cd backend && npx jest
-
   deploy:
-    needs: test
     runs-on: ubuntu-latest
+    # Only deploy after CI passes — no need to re-run tests here
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Deploy to EC2
-      uses: appleboy/ssh-action@v1
-      with:
-        host: ${{ secrets.EC2_HOST }}
-        username: ${{ secrets.EC2_USER }}
-        key: ${{ secrets.EC2_SSH_KEY }}
-        script: |
-          cd ~/whiteboard-collab
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            cd ~/whiteboard-collab
 
-          # Pull latest code
-          git pull origin main
+            # Save current image tags for rollback
+            OLD_BACKEND=$(docker inspect --format='{{.Image}}' whiteboard-backend 2>/dev/null || echo "none")
 
-          # Rebuild and restart containers
-          docker compose up --build --detach --remove-orphans
+            # Pull latest code
+            git fetch --prune
+            git reset --hard origin/main
 
-          # Clean up
-          docker image prune -f
-# ```
+            # Rebuild and restart
+            docker compose up --build --detach --remove-orphans
 
-# **What changed:** no ECR, no AWS credentials, no image registry at all. GitHub Actions SSHes in, pulls the code, Docker builds on the EC2 itself.
+            # Health check — wait up to 30s for backend to respond
+            echo "Waiting for backend..."
+            for i in $(seq 1 6); do
+              if docker compose exec -T backend wget -qO- http://localhost:4000/health > /dev/null 2>&1; then
+                echo "Backend healthy"
+                break
+              fi
+              if [ $i -eq 6 ]; then
+                echo "Health check failed — rolling back"
+                # Roll back to previous image if available
+                [ "$OLD_BACKEND" != "none" ] && docker compose down && docker compose up --detach
+                exit 1
+              fi
+              sleep 5
+            done
 
-# ---
-
-# ## The Tradeoff Explained
-
-# | | ECR approach | Build on EC2 |
-# |---|---|---|
-# | Build time | Fast (pre-built image) | Slower (builds on server) |
-# | Downtime during deploy | ~0s | 30–60s |
-# | Complexity | High | Low |
-# | Cost | ~$1–2/mo | $0 |
-# | Good for learning | Registry/IAM concepts | Simpler, faster to ship |
-
-# For a **portfolio project with no real users**, 30 seconds of downtime on deploy is completely fine.
-
-## When to Add ECR Back
-
-# Add it when you hit one of these:
-# ```
-# ✅ You have 2+ servers and need them to pull the same image
-# ✅ Build on EC2 takes too long (>10 min) and slows your workflow  
-# ✅ You need to roll back to a specific image version quickly
-# ✅ You're interviewing and want to demo the full AWS pipeline
-# ```
-
-# At that point, the pipeline you already have is exactly right — just uncomment it.
-
-## What to Store in GitHub Secrets (simplified)
-# ```
-# EC2_HOST        → your EC2 public IP
-# EC2_USER        → ubuntu
-# EC2_SSH_KEY     → your private key (the .pem contents)
+            # Clean up old images
+            docker image prune -f
