@@ -7,6 +7,8 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     # Only deploy after CI passes — no need to re-run tests here
     steps:
       - uses: actions/checkout@v4
