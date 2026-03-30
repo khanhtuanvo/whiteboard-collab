@@ -1,6 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import redis from '../../config/redis';
 import prisma from '../../config/database';
+import logger from '../../config/logger';
 
 interface JoinBoardData {
   boardId: string;
@@ -48,8 +49,8 @@ export class BoardEvents {
         })
       );
 
-      // Set expiry for cleanup
-      await redis.expire(`active:board:${boardId}`, 3600); // 1 hour
+      // Set expiry for cleanup — 5 min is sufficient for presence data
+      await redis.expire(`active:board:${boardId}`, 300);
 
       // Get full active user list
       const activeUsers = await redis.hgetall(`active:board:${boardId}`);
@@ -61,9 +62,9 @@ export class BoardEvents {
       socket.to(`board:${boardId}`).emit('user:joined', { userId, userName, userColor });
       socket.emit('board:active_users', users);
 
-      console.log(`✅ User ${userName} joined board ${boardId}`);
+      logger.info('User joined board', { userName, boardId });
     } catch (error) {
-      console.error('Error joining board:', error);
+      logger.error('Error joining board', { boardId, error });
       socket.emit('error', { message: 'Failed to join board' });
     }
   }
@@ -84,9 +85,9 @@ export class BoardEvents {
       io.to(`board:${boardId}`).emit('room:users', users);
       socket.to(`board:${boardId}`).emit('user:left', { userId });
 
-      console.log(`User ${userId} left board ${boardId}`);
+      logger.info('User left board', { userId, boardId });
     } catch (error) {
-      console.error('Error leaving board:', error);
+      logger.error('Error leaving board', { boardId, userId, error });
     }
   }
 }

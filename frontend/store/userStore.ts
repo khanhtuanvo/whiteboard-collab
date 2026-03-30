@@ -1,32 +1,34 @@
 import { create } from 'zustand';
 import { User } from '@/types/user';
+import api from '@/lib/api';
 
 interface UserState {
     user: User | null;
-    token: string | null;
     _hasHydrated: boolean;
-    setUser: (user: User, token: string) => void;
-    logout: () => void;
+    setUser: (user: User) => void;
+    logout: () => Promise<void>;
     setHydrated: () => void;
 }
 
 export const useUserStore = create<UserState>((set) => ({
     user: null,
-    token: null,
     _hasHydrated: false,
-    setUser: (user, token) => {
+    setUser: (user) => {
         if (typeof window !== 'undefined') {
-            localStorage.setItem('token', token);
             localStorage.setItem('user', JSON.stringify(user));
         }
-        set({ user, token });
+        set({ user });
     },
-    logout: () => {
+    logout: async () => {
+        try {
+            await api.post('/auth/logout');
+        } catch {
+            // ignore — clear local state regardless
+        }
         if (typeof window !== 'undefined') {
-            localStorage.removeItem('token');
             localStorage.removeItem('user');
         }
-        set({ user: null, token: null });
+        set({ user: null });
     },
     setHydrated: () => set({ _hasHydrated: true }),
 }));

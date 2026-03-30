@@ -1,6 +1,7 @@
 import { Socket, Server } from 'socket.io';
 import redis from '../../config/redis';
 import prisma from '../../config/database';
+import logger from '../../config/logger';
 import { v4 as uuidv4 } from 'uuid';
 import { ElementType, Role, Prisma } from '@prisma/client';
 import { z } from 'zod';  
@@ -96,6 +97,25 @@ interface ElementSnapshot {
   createdBy: string;
 }
 
+
+/**
+ * Writes an event to a Redis Stream capped at maxLen entries.
+ * Uses XADD ... MAXLEN ~ maxLen * ... to avoid unbounded growth.
+ * The `as any` cast is required because ioredis v5 typings don't expose the
+ * MAXLEN option on xadd — the underlying Redis command accepts it correctly.
+ */
+async function xaddCapped(
+  key: string,
+  maxLen: number,
+  fields: Record<string, string>
+): Promise<void> {
+  const args: string[] = ['MAXLEN', '~', String(maxLen), '*'];
+  for (const [k, v] of Object.entries(fields)) {
+    args.push(k, v);
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (redis as any).xadd(key, ...args);
+}
 
 export class ElementEvents {
   // ─── Snapshot helpers ────────────────────────────────────────────────────────
@@ -210,20 +230,18 @@ export class ElementEvents {
       try {
         await this.saveSnapshot(boardId, userId, preSnapshot);
       } catch (redisErr) {
-        console.error('Snapshot save failed (non-fatal):', redisErr);
+        logger.warn('Snapshot save failed (non-fatal)', { boardId, error: redisErr });
       }
 
-      // Add to Redis Stream (event sourcing)
-      await redis.xadd(
-        `events:board:${boardId}`,
-        '*',
-        'action', 'create',
-        'elementId', elementId,
-        'userId', userId,
-        'type', type,
-        'data', JSON.stringify(properties),
-        'timestamp', Date.now().toString()
-      );
+      // Add to Redis Stream (event sourcing) — capped at 1 000 entries per board
+      await xaddCapped(`events:board:${boardId}`, 1000, {
+        action: 'create',
+        elementId,
+        userId,
+        type,
+        data: JSON.stringify(properties),
+        timestamp: Date.now().toString(),
+      });
 
       // Publish to Redis Pub/Sub
       await redis.publish(
@@ -233,9 +251,9 @@ export class ElementEvents {
 
       io.to(`board:${boardId}`).emit('element:created', element);
 
-      console.log(`✅ Element ${elementId} created on board ${boardId}`);
+      logger.info('Element created', { elementId, boardId });
     } catch (error) {
-      console.error('Error creating element:', error);
+      logger.error('Error creating element', { boardId, error });
       const prismaError = error as { code?: string };
       if (prismaError?.code === 'P2002') {
         socket.emit('error', { message: 'Element ID already exists' });
@@ -303,7 +321,7 @@ export class ElementEvents {
       try {
         await this.saveSnapshot(boardId, userId, preSnapshot);
       } catch (redisErr) {
-        console.error('Snapshot save failed (non-fatal):', redisErr);
+        logger.warn('Snapshot save failed (non-fatal)', { boardId, error: redisErr });
       }
 
       // Add to history (Redis Sorted Set)
@@ -319,24 +337,22 @@ export class ElementEvents {
       );
       await redis.zremrangebyrank(`history:${boardId}:${userId}`, 0, -51);
 
-      await redis.xadd(
-        `events:board:${boardId}`,
-        '*',
-        'action', 'update',
-        'elementId', elementId,
-        'userId', userId,
-        'data', JSON.stringify(properties),
-        'timestamp', Date.now().toString()
-      );
+      await xaddCapped(`events:board:${boardId}`, 1000, {
+        action: 'update',
+        elementId,
+        userId,
+        data: JSON.stringify(properties),
+        timestamp: Date.now().toString(),
+      });
 
       io.to(`board:${boardId}`).emit('element:updated', {
         id: elementId,
         properties: updatedElement.properties,
       });
 
-      console.log(`✅ Element ${elementId} updated`);
+      logger.info('Element updated', { elementId, boardId });
     } catch (error) {
-      console.error('Error updating element:', error);
+      logger.error('Error updating element', { elementId, boardId, error });
       socket.emit('error', { message: 'Failed to update element' });
     }
   }
@@ -369,7 +385,7 @@ export class ElementEvents {
       try {
         await this.saveSnapshot(boardId, userId, preSnapshot);
       } catch (redisErr) {
-        console.error('Snapshot save failed (non-fatal):', redisErr);
+        logger.warn('Snapshot save failed (non-fatal)', { boardId, error: redisErr });
       }
 
       // L1: Trim history sorted set to last 50 entries
@@ -380,20 +396,18 @@ export class ElementEvents {
       );
       await redis.zremrangebyrank(`history:${boardId}:${userId}`, 0, -51);
 
-      await redis.xadd(
-        `events:board:${boardId}`,
-        '*',
-        'action', 'delete',
-        'elementId', elementId,
-        'userId', userId,
-        'timestamp', Date.now().toString()
-      );
+      await xaddCapped(`events:board:${boardId}`, 1000, {
+        action: 'delete',
+        elementId,
+        userId,
+        timestamp: Date.now().toString(),
+      });
 
       io.to(`board:${boardId}`).emit('element:deleted', { id: elementId });
 
-      console.log(`✅ Element ${elementId} deleted`);
+      logger.info('Element deleted', { elementId, boardId });
     } catch (error) {
-      console.error('Error deleting element:', error);
+      logger.error('Error deleting element', { elementId, boardId, error });
       socket.emit('error', { message: 'Failed to delete element' });
     }
   }
@@ -438,9 +452,9 @@ export class ElementEvents {
       const redoDepth = await redis.llen(`redo:${boardId}:${userId}`);
       socket.emit('history:state', { undoDepth, redoDepth });
 
-      console.log(`↩️  Undo on board ${boardId} by ${userId}: restored ${snapshot.length} elements`);
+      logger.info('Undo applied', { boardId, userId, elementCount: snapshot.length });
     } catch (error) {
-      console.error('Error handling undo:', error);
+      logger.error('Error handling undo', { boardId, userId, error });
       socket.emit('error', { message: 'Failed to undo' });
     }
   }
@@ -487,9 +501,9 @@ export class ElementEvents {
       const redoDepth = await redis.llen(`redo:${boardId}:${userId}`);
       socket.emit('history:state', { undoDepth, redoDepth });
 
-      console.log(`↪️  Redo on board ${boardId} by ${userId}: restored ${snapshot.length} elements`);
+      logger.info('Redo applied', { boardId, userId, elementCount: snapshot.length });
     } catch (error) {
-      console.error('Error handling redo:', error);
+      logger.error('Error handling redo', { boardId, userId, error });
       socket.emit('error', { message: 'Failed to redo' });
     }
   }
@@ -514,13 +528,13 @@ export class ElementEvents {
       try {
         await this.saveSnapshot(boardId, userId, preSnapshot);
       } catch (redisErr) {
-        console.error('Snapshot save failed (non-fatal):', redisErr);
+        logger.warn('Snapshot save failed (non-fatal)', { boardId, error: redisErr });
       }
 
       io.to(`board:${boardId}`).emit('board:cleared');
-      console.log(`🗑️  Board ${boardId} cleared by ${userId}`);
+      logger.info('Board cleared', { boardId, userId });
     } catch (error) {
-      console.error('Error clearing board:', error);
+      logger.error('Error clearing board', { boardId, userId, error });
       socket.emit('error', { message: 'Failed to clear board' });
     }
   }

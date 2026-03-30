@@ -146,3 +146,80 @@ describe('GET /api/boards/:id/elements', () => {
     expect(res.body[1].type).toBe('CIRCLE');
   });
 });
+
+// ── Public board routes ────────────────────────────────────────────────────────
+describe('Public board routes (no auth required)', () => {
+  const app = createTestApp();
+
+  const PUBLIC_BOARD_ID = 'public-board-id';
+
+  const publicBoard = {
+    id: PUBLIC_BOARD_ID,
+    title: 'Public Board',
+    ownerId: 'some-owner',
+    isPublic: true,
+    thumbnailUrl: null,
+    settings: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    owner: { id: 'some-owner', name: 'Owner Name' },
+  };
+
+  const publicElements = [
+    {
+      id: 'pub-elem-1',
+      boardId: PUBLIC_BOARD_ID,
+      type: 'STICKY_NOTE',
+      properties: { x: 0, y: 0, text: 'Hello' },
+      zIndex: 0,
+      createdBy: 'some-owner',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+  ];
+
+  // GET /api/public/boards/:id
+  describe('GET /api/public/boards/:id', () => {
+    it('returns 200 with board data when board is public — no auth header needed', async () => {
+      (prisma.board.findFirst as jest.Mock).mockResolvedValue(publicBoard);
+
+      const res = await request(app).get(`/api/public/boards/${PUBLIC_BOARD_ID}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.id).toBe(PUBLIC_BOARD_ID);
+      expect(res.body.isPublic).toBe(true);
+      expect(res.body.userRole).toBe('VIEWER');
+    });
+
+    it('returns 404 when board does not exist or is not public', async () => {
+      (prisma.board.findFirst as jest.Mock).mockResolvedValue(null);
+
+      const res = await request(app).get(`/api/public/boards/${PUBLIC_BOARD_ID}`);
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toMatch(/not found or not public/i);
+    });
+  });
+
+  // GET /api/public/boards/:id/elements
+  describe('GET /api/public/boards/:id/elements', () => {
+    it('returns 200 with elements when board is public — no auth header needed', async () => {
+      (prisma.board.findFirst as jest.Mock).mockResolvedValue(publicBoard);
+      (prisma.element.findMany as jest.Mock).mockResolvedValue(publicElements);
+
+      const res = await request(app).get(`/api/public/boards/${PUBLIC_BOARD_ID}/elements`);
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body[0].id).toBe('pub-elem-1');
+    });
+
+    it('returns 404 when board is private even if elements exist', async () => {
+      (prisma.board.findFirst as jest.Mock).mockResolvedValue(null);
+
+      const res = await request(app).get(`/api/public/boards/${PUBLIC_BOARD_ID}/elements`);
+
+      expect(res.status).toBe(404);
+    });
+  });
+});

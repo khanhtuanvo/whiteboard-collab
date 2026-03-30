@@ -25,8 +25,10 @@ export class BoardController {
   async getBoards(req: Request, res: Response) {
     try {
       const userId = req.userId!;
-      const boards = await boardService.getUserBoards(userId);
-      res.json(boards);
+      const page = Math.max(1, parseInt(req.query.page as string) || 1);
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
+      const result = await boardService.getUserBoards(userId, page, limit);
+      res.json(result);
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ error: error.issues });
@@ -108,6 +110,28 @@ export class BoardController {
       }
       const message = error instanceof Error ? error.message : 'Something went wrong';
       res.status(400).json({ error: message });
+    }
+  }
+
+  async getPublicBoard(req: Request, res: Response) {
+    try {
+      const id = req.params.id as string;
+      const board = await boardService.getPublicBoard(id);
+      res.json(board);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      res.status(404).json({ error: message });
+    }
+  }
+
+  async getPublicBoardElements(req: Request, res: Response) {
+    try {
+      const id = req.params.id as string;
+      const elements = await boardService.getPublicBoardElements(id);
+      res.json(elements);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      res.status(404).json({ error: message });
     }
   }
 

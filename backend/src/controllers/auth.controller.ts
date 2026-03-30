@@ -2,13 +2,22 @@ import {Request, Response} from 'express';
 import { AuthService } from '../services/auth.service';
 import { z } from 'zod';
 
+const COOKIE_OPTIONS = {
+    httpOnly: true,
+    sameSite: 'lax' as const,
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days, matches JWT_EXPIRES_IN default
+};
+
 
 const authService = new AuthService();
 
 //Validation schemas
 const updateProfileSchema = z.object({
     name: z.string().min(2).optional(),
-    avatarUrl: z.string().url().optional(),
+    avatarUrl: z.string().url().refine(u => u.startsWith('https://'), {
+        message: 'avatarUrl must use HTTPS',
+    }).optional(),
 });
 
 const registerSchema = z.object({
@@ -27,7 +36,8 @@ export class AuthController {
         try {
             const {email, password, name} = registerSchema.parse(req.body);
             const result = await authService.register(email, password, name);
-            res.status(201).json(result);
+            res.cookie('token', result.token, COOKIE_OPTIONS);
+            res.status(201).json({ user: result.user });
         } catch (error) {
             if (error instanceof z.ZodError){
                 return res.status(400).json({error: error.issues});
@@ -41,7 +51,8 @@ export class AuthController {
         try {
             const {email, password} = loginSchema.parse(req.body);
             const result = await authService.login(email, password);
-            res.json(result);
+            res.cookie('token', result.token, COOKIE_OPTIONS);
+            res.json({ user: result.user });
         } catch (error) {
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ error: error.issues});

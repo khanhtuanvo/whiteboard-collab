@@ -6,15 +6,13 @@ import { useUserStore } from '@/store/userStore';
 
 export function Providers({ children }: { children: React.ReactNode }) {
   useEffect(() => {
-    const token = localStorage.getItem('token');
     const userStr = localStorage.getItem('user');
-    if (token && userStr) {
+    if (userStr) {
       try {
         const user = JSON.parse(userStr);
-        useUserStore.getState().setUser(user, token);
+        useUserStore.getState().setUser(user);
       } catch {
         // corrupted data — clear it
-        localStorage.removeItem('token');
         localStorage.removeItem('user');
       }
     }

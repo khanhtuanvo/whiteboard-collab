@@ -29,7 +29,6 @@ export default function SettingsPage() {
   const router = useRouter();
   const user = useUserStore((state) => state.user);
   const setUser = useUserStore((state) => state.setUser);
-  const token = useUserStore((state) => state.token);
   const _hasHydrated = useUserStore((state) => state._hasHydrated);
 
   const [name, setName] = useState(user?.name ?? '');
@@ -68,7 +67,7 @@ export default function SettingsPage() {
       const body: Record<string, string> = { name: name.trim() };
       if (avatarUrl.trim()) body.avatarUrl = avatarUrl.trim();
       const res = await api.patch('/api/auth/profile', body);
-      setUser(res.data, token as string);
+      setUser(res.data);
       toast.success('Profile updated');
     } catch {
       toast.error('Failed to update profile');

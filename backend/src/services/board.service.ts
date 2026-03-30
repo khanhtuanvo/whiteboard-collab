@@ -2,31 +2,35 @@ import prisma from '../config/database';
 import { Role } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 export class BoardService {
-    async getUserBoards(userId: string) {
-        const boards = await prisma.board.findMany({
-            where: {
-                OR: [
-                    { ownerId: userId },
-                    {
-                        collaborators: {
-                            some: {userId}
-                        }
+    async getUserBoards(userId: string, page: number = 1, limit: number = 20) {
+        const skip = (page - 1) * limit;
+        const where = {
+            OR: [
+                { ownerId: userId },
+                { collaborators: { some: { userId } } }
+            ]
+        };
+        const [boards, total] = await Promise.all([
+            prisma.board.findMany({
+                where,
+                orderBy: { updatedAt: 'desc' },
+                skip,
+                take: limit,
+                include: {
+                    _count: { select: { collaborators: true } },
+                    collaborators: {
+                        where: { userId },
+                        select: { role: true }
                     }
-                ]
-            },
-            orderBy: {updatedAt: 'desc'},
-            include: {
-                _count: { select: { collaborators: true } },
-                collaborators: {
-                    where: { userId },
-                    select: { role: true }
                 }
-            }
-        });
-        return boards.map(b => ({
+            }),
+            prisma.board.count({ where }),
+        ]);
+        const data = boards.map(b => ({
             ...b,
             userRole: b.ownerId === userId ? 'OWNER' : (b.collaborators[0]?.role ?? 'VIEWER'),
         }));
+        return { data, total, page, pageSize: limit };
     }
 
     async getBoard(boardId: string, userId: string){
@@ -141,6 +145,28 @@ export class BoardService {
             where: { boardId_userId: { boardId, userId: user.id } },
             create: { boardId, userId: user.id, role },
             update: { role },
+        });
+    }
+
+    async getPublicBoard(boardId: string) {
+        const board = await prisma.board.findFirst({
+            where: { id: boardId, isPublic: true },
+            include: {
+                owner: { select: { id: true, name: true } },
+            }
+        });
+        if (!board) throw new Error('Board not found or not public');
+        return { ...board, userRole: 'VIEWER' as const };
+    }
+
+    async getPublicBoardElements(boardId: string) {
+        const board = await prisma.board.findFirst({
+            where: { id: boardId, isPublic: true }
+        });
+        if (!board) throw new Error('Board not found or not public');
+        return prisma.element.findMany({
+            where: { boardId },
+            orderBy: { zIndex: 'asc' }
         });
     }
 

@@ -7,6 +7,7 @@
  */
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import { AuthController } from '../../src/controllers/auth.controller';
 import { authMiddleware } from '../../src/middleware/auth.middleware';
 import { BoardController } from '../../src/controllers/board.controller';
@@ -15,6 +16,7 @@ export function createTestApp() {
   const app = express();
 
   app.use(cors());
+  app.use(cookieParser());
   app.use(express.json());
 
   const authController = new AuthController();
@@ -25,7 +27,11 @@ export function createTestApp() {
   app.post('/api/auth/login', (req, res) => authController.login(req, res));
   app.get('/api/auth/profile', authMiddleware, (req, res) => authController.getProfile(req, res));
 
-  // Boards
+  // Public board routes (unauthenticated, isPublic boards only)
+  app.get('/api/public/boards/:id', (req, res) => boardController.getPublicBoard(req, res));
+  app.get('/api/public/boards/:id/elements', (req, res) => boardController.getPublicBoardElements(req, res));
+
+  // Boards (protected)
   app.get('/api/boards', authMiddleware, (req, res) => boardController.getBoards(req, res));
   app.get('/api/boards/:id', authMiddleware, (req, res) => boardController.getBoard(req, res));
   app.get('/api/boards/:id/elements', authMiddleware, (req, res) => boardController.getBoardElements(req, res));

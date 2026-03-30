@@ -6,10 +6,12 @@ RUN npm ci
 COPY . . 
 RUN npm run build 
 
-#Run time 
-FROM node:20-alpine 
-WORKDIR /app 
-COPY --from=builder /app/dist ./dist 
-COPY --from=builder /app/node_modules ./node_modules 
-COPY --from=builder /app/prisma ./prisma 
+#Run time
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/prisma ./prisma
+RUN addgroup -g 1001 appuser && adduser -D -u 1001 -G appuser appuser
+USER appuser
 CMD ["node", "dist/server.js"]

@@ -72,7 +72,7 @@ describe('Auth routes', () => {
 
   // ── POST /api/auth/register ─────────────────────────────────────────────────
   describe('POST /api/auth/register', () => {
-    it('returns 201 with user + JWT token on valid registration', async () => {
+    it('returns 201 with user (no token in body) and sets httpOnly cookie on valid registration', async () => {
       (prisma.user.findUnique as jest.Mock).mockResolvedValue(null);
       (prisma.user.create as jest.Mock).mockResolvedValue({
         id: USER_ID,
@@ -86,13 +86,19 @@ describe('Auth routes', () => {
         .send({ email: USER_EMAIL, password: RAW_PW, name: USER_NAME });
 
       expect(res.status).toBe(201);
-      expect(res.body.token).toBeDefined();
+      // Token must NOT appear in response body (it lives in an httpOnly cookie)
+      expect(res.body.token).toBeUndefined();
       expect(res.body.user.email).toBe(USER_EMAIL);
       expect(res.body.user.name).toBe(USER_NAME);
       // passwordHash must never appear in the response
       expect(res.body.user.passwordHash).toBeUndefined();
-      // Token must decode to the created user's id
-      const decoded = verifyToken(res.body.token);
+      // JWT must be delivered via Set-Cookie, not the body
+      const setCookie = (res.headers['set-cookie'] as unknown as string[])?.[0] ?? '';
+      expect(setCookie).toMatch(/^token=/);
+      expect(setCookie).toMatch(/HttpOnly/i);
+      // Token in the cookie must decode to the created user's id
+      const cookieToken = setCookie.split(';')[0].replace('token=', '');
+      const decoded = verifyToken(cookieToken);
       expect(decoded?.userId).toBe(USER_ID);
     });
 
@@ -126,7 +132,7 @@ describe('Auth routes', () => {
 
   // ── POST /api/auth/login ────────────────────────────────────────────────────
   describe('POST /api/auth/login', () => {
-    it('returns 200 with user + JWT token on valid credentials', async () => {
+    it('returns 200 with user (no token in body) and sets httpOnly cookie on valid credentials', async () => {
       (prisma.user.findUnique as jest.Mock).mockResolvedValue(storedUser);
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
@@ -135,10 +141,15 @@ describe('Auth routes', () => {
         .send({ email: USER_EMAIL, password: RAW_PW });
 
       expect(res.status).toBe(200);
-      expect(res.body.token).toBeDefined();
+      // Token must NOT appear in response body
+      expect(res.body.token).toBeUndefined();
       expect(res.body.user.id).toBe(USER_ID);
       expect(res.body.user.email).toBe(USER_EMAIL);
       expect(res.body.user.passwordHash).toBeUndefined();
+      // JWT must be in the Set-Cookie header
+      const setCookie = (res.headers['set-cookie'] as unknown as string[])?.[0] ?? '';
+      expect(setCookie).toMatch(/^token=/);
+      expect(setCookie).toMatch(/HttpOnly/i);
     });
 
     it('returns 401 when the user does not exist', async () => {

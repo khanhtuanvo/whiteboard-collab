@@ -47,6 +47,7 @@ model Board {
   snapshots Snapshot[]
 
   @@index([ownerId])
+  @@index([ownerId, updatedAt])
   @@map("boards")
 }
 
@@ -87,8 +88,7 @@ model Element {
   board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
   creator User @relation(fields: [createdBy], references: [id])
 
-  @@index([boardId])
-  @@index([zIndex])
+  @@index([boardId, zIndex])
   @@map("elements")
 }
 
@@ -112,6 +112,6 @@ model Snapshot {
   board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
   creator User @relation(fields: [createdBy], references: [id])
 
-  @@index([boardId])
+  @@index([boardId, createdAt])
   @@map("snapshots")
 }
