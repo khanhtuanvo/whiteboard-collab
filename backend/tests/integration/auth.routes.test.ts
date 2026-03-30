@@ -25,6 +25,8 @@ jest.mock('../../src/config/redis', () => ({
   __esModule: true,
   default: {
     ping: jest.fn().mockResolvedValue('PONG'),
+    get: jest.fn().mockResolvedValue(null),
+    setex: jest.fn().mockResolvedValue('OK'),
     hset: jest.fn().mockResolvedValue(1),
     hgetall: jest.fn().mockResolvedValue({}),
     hdel: jest.fn().mockResolvedValue(1),
@@ -46,6 +48,7 @@ jest.mock('bcryptjs', () => ({
 import request from 'supertest';
 import bcrypt from 'bcryptjs';
 import prisma from '../../src/config/database';
+import redis from '../../src/config/redis';
 import { verifyToken } from '../../src/utils/jwt';
 import { createTestApp } from '../helpers/testApp';
 
@@ -181,6 +184,46 @@ describe('Auth routes', () => {
         .send({ email: USER_EMAIL }); // missing password
 
       expect(res.status).toBe(400);
+    });
+  });
+
+  // ── POST /api/auth/logout ───────────────────────────────────────────────────
+  describe('POST /api/auth/logout', () => {
+    it('returns 200 and clears the auth cookie', async () => {
+      const res = await request(app)
+        .post('/api/auth/logout')
+        .set('Cookie', 'token=sometoken');
+
+      expect(res.status).toBe(200);
+      expect(res.body.message).toBe('Logged out');
+      // Cookie must be cleared (Expires set to epoch)
+      const setCookie = (res.headers['set-cookie'] as unknown as string[])?.[0] ?? '';
+      expect(setCookie).toMatch(/token=/);
+      expect(setCookie).toMatch(/Expires=Thu, 01 Jan 1970/i);
+    });
+
+    it('blacklists a valid token in Redis on logout', async () => {
+      // Obtain a real signed token via login
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(storedUser);
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+      const loginRes = await request(app)
+        .post('/api/auth/login')
+        .send({ email: USER_EMAIL, password: RAW_PW });
+
+      const setCookie = (loginRes.headers['set-cookie'] as unknown as string[])?.[0] ?? '';
+      const token = setCookie.split(';')[0].replace('token=', '');
+
+      const logoutRes = await request(app)
+        .post('/api/auth/logout')
+        .set('Cookie', `token=${token}`);
+
+      expect(logoutRes.status).toBe(200);
+      expect(redis.setex as jest.Mock).toHaveBeenCalledWith(
+        expect.stringMatching(/^bl:/),
+        expect.any(Number),
+        '1',
+      );
     });
   });
 });

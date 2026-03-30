@@ -284,7 +284,7 @@ export class ElementEvents {
         where: { id: elementId },
       });
 
-      if (!currentElement) {
+      if (!currentElement || currentElement.boardId !== boardId) {
         socket.emit('error', { message: 'Element not found' });
         return;
       }
@@ -371,7 +371,7 @@ export class ElementEvents {
         where: { id: elementId },
       });
 
-      if (!element) {
+      if (!element || element.boardId !== boardId) {
         socket.emit('error', { message: 'Element not found' });
         return;
       }
@@ -513,9 +513,11 @@ export class ElementEvents {
   async handleClearBoard(socket: Socket, io: Server, data: { boardId: string; userId: string }) {
     const { boardId, userId } = data;
     try {
-      const hasAccess = await this.checkBoardAccess(boardId, userId, 'EDITOR');
+      // Clearing the entire board is a destructive operation — restrict to OWNER and ADMIN.
+      // Regular EDITORs cannot wipe another user's work.
+      const hasAccess = await this.checkBoardAccess(boardId, userId, Role.ADMIN);
       if (!hasAccess) {
-        socket.emit('error', { message: 'Permission denied' });
+        socket.emit('error', { message: 'Only board owners and admins can clear the board' });
         return;
       }
 

@@ -25,6 +25,7 @@ export function createTestApp() {
   // Auth
   app.post('/api/auth/register', (req, res) => authController.register(req, res));
   app.post('/api/auth/login', (req, res) => authController.login(req, res));
+  app.post('/api/auth/logout', (req, res) => authController.logout(req, res));
   app.get('/api/auth/profile', authMiddleware, (req, res) => authController.getProfile(req, res));
 
   // Public board routes (unauthenticated, isPublic boards only)

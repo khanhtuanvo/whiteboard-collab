@@ -38,7 +38,15 @@ const subClient = pubClient.duplicate();
 io.adapter(createAdapter(pubClient, subClient));
 
 
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false });
+const authLimiter  = rateLimit({ windowMs: 15 * 60 * 1000, max: 10,  standardHeaders: true, legacyHeaders: false });
+const boardLimiter = rateLimit({ windowMs:       60 * 1000, max: 100, standardHeaders: true, legacyHeaders: false });
+const aiLimiter    = rateLimit({
+    windowMs: 60 * 1000,
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'AI rate limit exceeded — max 5 requests per minute' },
+});
 
 //Middleware
 app.use(helmet());
@@ -106,22 +114,19 @@ app.get('/api/public/boards/:id', (req, res) => boardController.getPublicBoard(r
 app.get('/api/public/boards/:id/elements', (req, res) => boardController.getPublicBoardElements(req, res));
 
 // Board routes (protected)
-app.get('/api/boards', authMiddleware, (req, res) => boardController.getBoards(req, res));
-app.get('/api/boards/:id', authMiddleware, (req, res) => boardController.getBoard(req, res));
-app.get('/api/boards/:id/elements', authMiddleware, (req, res) => boardController.getBoardElements(req, res));
-app.post('/api/boards', authMiddleware, (req, res) => boardController.createBoard(req, res));
-app.patch('/api/boards/:id', authMiddleware, (req, res) => boardController.updateBoard(req, res));
-app.delete('/api/boards/:id', authMiddleware, (req, res) => boardController.deleteBoard(req, res));
-app.post('/api/boards/:id/collaborators', authMiddleware, (req, res) => boardController.addCollaborator(req, res));
+app.get('/api/boards', authMiddleware, boardLimiter, (req, res) => boardController.getBoards(req, res));
+app.get('/api/boards/:id', authMiddleware, boardLimiter, (req, res) => boardController.getBoard(req, res));
+app.get('/api/boards/:id/elements', authMiddleware, boardLimiter, (req, res) => boardController.getBoardElements(req, res));
+app.post('/api/boards', authMiddleware, boardLimiter, (req, res) => boardController.createBoard(req, res));
+app.patch('/api/boards/:id', authMiddleware, boardLimiter, (req, res) => boardController.updateBoard(req, res));
+app.delete('/api/boards/:id', authMiddleware, boardLimiter, (req, res) => boardController.deleteBoard(req, res));
+app.post('/api/boards/:id/collaborators', authMiddleware, boardLimiter, (req, res) => boardController.addCollaborator(req, res));
 
-// AI routes (protected)
-app.post('/api/boards/:id/ai/cluster', authMiddleware, (req, res) => aiController.clusterElements(req, res));
+// AI routes (protected) — tightly rate-limited: ML inference is expensive
+app.post('/api/boards/:id/ai/cluster', authMiddleware, aiLimiter, (req, res) => aiController.clusterElements(req, res));
 
-// Logout — clears the httpOnly auth cookie
-app.post('/api/auth/logout', (_req, res) => {
-    res.clearCookie('token', { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production' });
-    res.json({ message: 'Logged out' });
-});
+// Logout — blacklists the JWT in Redis, then clears the httpOnly auth cookie
+app.post('/api/auth/logout', (req, res) => authController.logout(req, res));
 
 // Wire up all Socket.io handlers (auth, board, cursor, element events)
 setupSocketHandlers(io);

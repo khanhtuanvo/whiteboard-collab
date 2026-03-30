@@ -33,6 +33,8 @@ jest.mock('../../src/config/redis', () => ({
   __esModule: true,
   default: {
     ping: jest.fn().mockResolvedValue('PONG'),
+    get: jest.fn().mockResolvedValue(null),   // blacklist check in authMiddleware
+    setex: jest.fn().mockResolvedValue('OK'),
     hset: jest.fn().mockResolvedValue(1),
     hgetall: jest.fn().mockResolvedValue({}),
     hdel: jest.fn().mockResolvedValue(1),

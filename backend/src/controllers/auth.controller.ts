@@ -1,11 +1,19 @@
 import {Request, Response} from 'express';
 import { AuthService } from '../services/auth.service';
 import { z } from 'zod';
+import { verifyToken } from '../utils/jwt';
+import redis from '../config/redis';
+import logger from '../config/logger';
 
-const COOKIE_OPTIONS = {
+// Base cookie attributes shared by set and clear operations
+const COOKIE_SETTINGS = {
     httpOnly: true,
     sameSite: 'lax' as const,
     secure: process.env.NODE_ENV === 'production',
+};
+
+const COOKIE_OPTIONS = {
+    ...COOKIE_SETTINGS,
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days, matches JWT_EXPIRES_IN default
 };
 
@@ -86,5 +94,24 @@ export class AuthController {
             const message = error instanceof Error ? error.message : 'Something went wrong';
             res.status(400).json({ error: message });
         }
+    }
+
+    async logout(req: Request, res: Response) {
+        const token = req.cookies?.token as string | undefined;
+        if (token) {
+            const payload = verifyToken(token);
+            if (payload?.exp) {
+                const ttl = payload.exp - Math.floor(Date.now() / 1000);
+                if (ttl > 0) {
+                    try {
+                        await redis.setex(`bl:${token}`, ttl, '1');
+                    } catch (err) {
+                        logger.warn('Failed to blacklist token on logout', { err });
+                    }
+                }
+            }
+        }
+        res.clearCookie('token', COOKIE_SETTINGS);
+        res.json({ message: 'Logged out' });
     }
 }
