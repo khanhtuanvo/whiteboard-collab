@@ -20,6 +20,8 @@ interface UseWebSocketOptions {
   onBoardCleared?: () => void;
   /** C3: Called when server reports updated undo/redo stack depths */
   onHistoryState?: (undoDepth: number, redoDepth: number) => void;
+  /** Called on every socket reconnect (not the initial connect). Use to re-sync board state. */
+  onReconnect?: () => void;
 }
 
 export function useWebSocket({
@@ -36,6 +38,7 @@ export function useWebSocket({
   onCursorUpdate,
   onBoardCleared,
   onHistoryState,
+  onReconnect,
 }: UseWebSocketOptions) {
   // Keep callbacks in refs so the effect never needs to re-run when they change
   const onElementCreatedRef = useRef(onElementCreated);
@@ -48,6 +51,7 @@ export function useWebSocket({
   const onCursorUpdateRef = useRef(onCursorUpdate);
   const onBoardClearedRef = useRef(onBoardCleared);
   const onHistoryStateRef = useRef(onHistoryState);
+  const onReconnectRef = useRef(onReconnect);
 
   useEffect(() => { onElementCreatedRef.current = onElementCreated; });
   useEffect(() => { onElementUpdatedRef.current = onElementUpdated; });
@@ -59,6 +63,12 @@ export function useWebSocket({
   useEffect(() => { onCursorUpdateRef.current = onCursorUpdate; });
   useEffect(() => { onBoardClearedRef.current = onBoardCleared; });
   useEffect(() => { onHistoryStateRef.current = onHistoryState; });
+  useEffect(() => { onReconnectRef.current = onReconnect; });
+
+  // Tracks whether the socket has successfully joined at least once for this
+  // board session. Reset to false each time the effect re-runs (new boardId /
+  // userName) so the very first join is never mistaken for a reconnect.
+  const hasJoinedRef = useRef(false);
 
   useEffect(() => {
     // Don't connect if user isn't authenticated yet
@@ -66,8 +76,28 @@ export function useWebSocket({
 
     const socket = getSocket();
 
-    // Join the board room
-    socket.emit('board:join', { boardId, userName, userColor });
+    // Reset join tracking for this session (new boardId / userName)
+    hasJoinedRef.current = false;
+
+    // Emits board:join and — if this is a reconnect after a prior disconnect —
+    // notifies the caller so it can re-sync board state.
+    // Socket.IO fires 'connect' on the very first connection AND on every
+    // subsequent reconnect, so this single handler covers both cases.
+    const handleConnect = () => {
+      socket.emit('board:join', { boardId, userName, userColor });
+      if (hasJoinedRef.current) {
+        // Second+ connect event for this session = reconnect
+        onReconnectRef.current?.();
+      }
+      hasJoinedRef.current = true;
+    };
+
+    // If the socket is already connected when this effect runs (common on
+    // navigation between boards), join immediately without waiting for 'connect'.
+    if (socket.connected) {
+      handleConnect();
+    }
+    socket.on('connect', handleConnect);
 
     // Receive the full list of current active users on join
     const handleActiveUsers = (users: ActiveUser[]) => {
@@ -130,6 +160,7 @@ export function useWebSocket({
 
     return () => {
       socket.emit('board:leave', { boardId });
+      socket.off('connect', handleConnect);
       socket.off('board:active_users', handleActiveUsers);
       socket.off('user:joined', handleUserJoined);
       socket.off('user:left', handleUserLeft);

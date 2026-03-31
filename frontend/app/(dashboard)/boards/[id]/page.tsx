@@ -54,11 +54,27 @@ export default function BoardPage() {
   const updateUserCursor = useBoardStore((state) => state.updateUserCursor);
   const reset = useBoardStore((state) => state.reset);
 
-  // Race-condition guard: buffer incoming socket events until the initial HTTP
-  // fetch has completed. Events that arrive before initialization are replayed
-  // afterward; events whose element ID already exists are skipped (dedup).
+  // ─── Init gate + ordered event buffer ───────────────────────────────────────
+  // Problem: WebSocket events (create/update/delete/clear/snapshot) can arrive
+  // BEFORE the initial REST fetch completes.  Naively applying them causes
+  // duplicates, stale overwrites, or missed deletes.
+  //
+  // Solution: buffer ALL canvas-mutating events in arrival order while
+  // isInitializedRef === false.  After the fetch lands, replay the queue in
+  // order with dedup on element IDs already present in the REST response.
+  //
+  // Reconnect: loadBoard() is re-invoked on every socket reconnect.  A numeric
+  // abort key ensures only the most-recent in-flight load applies its result.
+  type BufferedEvent =
+    | { kind: 'created';  payload: Element }
+    | { kind: 'updated';  id: string; properties: Record<string, unknown> }
+    | { kind: 'deleted';  id: string }
+    | { kind: 'snapshot'; elements: Element[] }
+    | { kind: 'cleared' };
+
   const isInitializedRef = useRef(false);
-  const pendingCreatesRef = useRef<Element[]>([]);
+  const eventQueueRef    = useRef<BufferedEvent[]>([]);
+  const loadAbortKeyRef  = useRef(0);
 
   const [board, setBoard] = useState<Board | null>(null);
   const [selectedTool, setSelectedTool] = useState<string>('select');
@@ -98,22 +114,50 @@ export default function BoardPage() {
     [selectedElementId, elements]
   );
 
-  // ─── Stable WebSocket callbacks ─────────────────────────────────────────────
+  // ─── Canvas-state callbacks: gate on isInitializedRef ───────────────────────
+  // Any of these five events arriving before the REST fetch lands are queued in
+  // eventQueueRef (in arrival order) and replayed once initialization completes.
   const handleElementCreated = useCallback((el: Element) => {
     if (!isInitializedRef.current) {
-      // Buffer until the initial HTTP fetch completes
-      pendingCreatesRef.current.push(el);
+      eventQueueRef.current.push({ kind: 'created', payload: el });
       return;
     }
     applyRemoteChange(el);
   }, [applyRemoteChange]);
-  const handleElementUpdated = useCallback(
-    (id: string, properties: Record<string, unknown>) => updateElement(id, properties as Element['properties']),
-    [updateElement]
-  );
-  const handleElementDeleted = useCallback((id: string) => removeElement(id), [removeElement]);
-  const handleSnapshot = useCallback((els: Element[]) => setElements(els), [setElements]);
-  const handleBoardCleared = useCallback(() => clearElements(), [clearElements]);
+
+  const handleElementUpdated = useCallback((id: string, properties: Record<string, unknown>) => {
+    if (!isInitializedRef.current) {
+      eventQueueRef.current.push({ kind: 'updated', id, properties });
+      return;
+    }
+    updateElement(id, properties as Element['properties']);
+  }, [updateElement]);
+
+  const handleElementDeleted = useCallback((id: string) => {
+    if (!isInitializedRef.current) {
+      eventQueueRef.current.push({ kind: 'deleted', id });
+      return;
+    }
+    removeElement(id);
+  }, [removeElement]);
+
+  const handleSnapshot = useCallback((els: Element[]) => {
+    if (!isInitializedRef.current) {
+      eventQueueRef.current.push({ kind: 'snapshot', elements: els });
+      return;
+    }
+    setElements(els);
+  }, [setElements]);
+
+  const handleBoardCleared = useCallback(() => {
+    if (!isInitializedRef.current) {
+      eventQueueRef.current.push({ kind: 'cleared' });
+      return;
+    }
+    clearElements();
+  }, [clearElements]);
+
+  // Presence callbacks — not canvas-state, never need gating
   const handleActiveUsers = useCallback(
     (users: Parameters<typeof setActiveUsers>[0]) => setActiveUsers(users),
     [setActiveUsers]
@@ -127,6 +171,81 @@ export default function BoardPage() {
     (userId: string, x: number, y: number) => updateUserCursor(userId, x, y),
     [updateUserCursor]
   );
+
+  // ─── loadBoard ───────────────────────────────────────────────────────────────
+  // Extracted so it can be called both on mount and on every socket reconnect.
+  // isReconnect=true keeps the current elements visible during the background
+  // resync instead of showing the full-screen loader.
+  const loadBoard = useCallback(async (isReconnect = false) => {
+    // Abort key: if a newer loadBoard call starts before this one finishes,
+    // the stale response is discarded so it cannot overwrite fresher data.
+    const key = ++loadAbortKeyRef.current;
+
+    isInitializedRef.current = false;
+    eventQueueRef.current = [];
+
+    if (!isReconnect) {
+      setLoading(true);
+      reset();
+    }
+
+    try {
+      const [boardData, elementsData] = await Promise.all([
+        boardService.getBoard(boardId),
+        boardService.getBoardElements(boardId),
+      ]);
+
+      if (key !== loadAbortKeyRef.current) return; // Stale — a newer load is in flight
+
+      setBoard(boardData);
+      const fetchedElements = elementsData.map(deserializeElement);
+      setElements(fetchedElements);
+
+      // Build a working ID set so the replay loop can track creates/deletes
+      const fetchedIds = new Set(fetchedElements.map((el: Element) => el.id));
+
+      // Open the gate before replaying so any events that arrive mid-replay go
+      // directly to the store instead of being re-queued.
+      isInitializedRef.current = true;
+
+      for (const event of eventQueueRef.current) {
+        switch (event.kind) {
+          case 'created':
+            if (!fetchedIds.has(event.payload.id)) {
+              applyRemoteChange(event.payload);
+              fetchedIds.add(event.payload.id);
+            }
+            break;
+          case 'updated':
+            updateElement(event.id, event.properties as Element['properties']);
+            break;
+          case 'deleted':
+            removeElement(event.id);
+            fetchedIds.delete(event.id);
+            break;
+          case 'snapshot':
+            setElements(event.elements);
+            break;
+          case 'cleared':
+            clearElements();
+            break;
+        }
+      }
+      eventQueueRef.current = [];
+    } catch (err) {
+      if (key !== loadAbortKeyRef.current) return;
+      console.error('Failed to load board:', err);
+      if (!isReconnect) router.push('/boards');
+    } finally {
+      if (key === loadAbortKeyRef.current) setLoading(false);
+    }
+  }, [boardId, reset, setElements, applyRemoteChange, updateElement, removeElement, clearElements, router]);
+
+  // Called by useWebSocket whenever the socket reconnects (after a disconnect).
+  // Re-runs the full fetch+replay cycle without showing the loading screen.
+  const handleReconnect = useCallback(() => {
+    loadBoard(true);
+  }, [loadBoard]);
 
   // C3: Stable indirection ref breaks the circular dep between useWebSocket and useHistory
   const historyStateSetterRef = useRef<(undoDepth: number, redoDepth: number) => void>(() => {});
@@ -149,6 +268,7 @@ export default function BoardPage() {
       onCursorUpdate: handleCursorUpdate,
       onBoardCleared: handleBoardCleared,
       onHistoryState: stableHistoryStateCallback,
+      onReconnect: handleReconnect,
     });
 
   const { undo, redo, setHistoryState, canUndo, canRedo } = useHistory({
@@ -170,38 +290,8 @@ export default function BoardPage() {
       router.push('/login');
       return;
     }
-
-    isInitializedRef.current = false;
-    pendingCreatesRef.current = [];
-    reset();
-
-    const load = async () => {
-      try {
-        const [boardData, elementsData] = await Promise.all([
-          boardService.getBoard(boardId),
-          boardService.getBoardElements(boardId),
-        ]);
-        setBoard(boardData);
-        setElements(elementsData.map(deserializeElement));
-
-        // Mark as initialized and replay any events that arrived during the fetch,
-        // skipping duplicates whose ID is already present in elementsData.
-        isInitializedRef.current = true;
-        const fetchedIds = new Set(elementsData.map((el: Element) => el.id));
-        for (const el of pendingCreatesRef.current) {
-          if (!fetchedIds.has(el.id)) applyRemoteChange(el);
-        }
-        pendingCreatesRef.current = [];
-      } catch (err) {
-        console.error('Failed to load board:', err);
-        router.push('/boards');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    load();
-  }, [boardId, user, _hasHydrated, router, reset, setElements]);
+    loadBoard();
+  }, [boardId, user, _hasHydrated, loadBoard, router]);
 
   // ─── Keyboard shortcuts (Ctrl+Z / Ctrl+Y) ───────────────────────────────────
   useEffect(() => {
@@ -420,7 +510,7 @@ export default function BoardPage() {
       )}
 
       {/* Reconnection banner */}
-      <ConnectionBanner boardId={boardId} />
+      <ConnectionBanner />
 
       {/* Canvas — wrapping div captures mouse for cursor broadcasting */}
       <div

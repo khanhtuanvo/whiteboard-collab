@@ -1,25 +1,30 @@
-#Stage 1: Dependencies
+# Stage 1: Dependencies
 FROM node:20-alpine AS deps
-WORKDIR /app 
+WORKDIR /app
 COPY package*.json ./
-RUN npm ci 
+RUN npm ci
 
-#Stage 2: Build 
-FROM node:20-alpine AS builder 
-WORKDIR /app 
-
+# Stage 2: Build
+# NEXT_PUBLIC_* vars are inlined into the JS bundle at compile time.
+# They MUST be passed as build ARGs here — setting them only in the
+# container's runtime environment has no effect for browser-side code.
+FROM node:20-alpine AS builder
+WORKDIR /app
+ARG NEXT_PUBLIC_API_URL=http://localhost/api
+ARG NEXT_PUBLIC_WS_URL=http://localhost
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
 COPY --from=deps /app/node_modules ./node_modules
-COPY . . 
-RUN npm run build 
+COPY . .
+RUN npm run build
 
-#Stage 3: Runtime
+# Stage 3: Runtime
 FROM node:20-alpine
 WORKDIR /app
-
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
-
 RUN addgroup -g 1001 appuser && adduser -D -u 1001 -G appuser appuser
 USER appuser
+EXPOSE 3000
 CMD ["node", "server.js"]

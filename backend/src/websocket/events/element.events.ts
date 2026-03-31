@@ -229,6 +229,11 @@ export class ElementEvents {
       // C1: Save snapshot only on DB success; Redis failure is non-fatal
       try {
         await this.saveSnapshot(boardId, userId, preSnapshot);
+        // Inform the originating client of the new undo stack depth so canUndo
+        // becomes true immediately after the first mutation (redo is 0 because
+        // saveSnapshot always clears it).
+        const undoDepth = await redis.llen(`snapshots:${boardId}:${userId}`);
+        socket.emit('history:state', { undoDepth, redoDepth: 0 });
       } catch (redisErr) {
         logger.warn('Snapshot save failed (non-fatal)', { boardId, error: redisErr });
       }
@@ -320,6 +325,8 @@ export class ElementEvents {
       // C1: Save snapshot only on DB success; Redis failure is non-fatal
       try {
         await this.saveSnapshot(boardId, userId, preSnapshot);
+        const undoDepth = await redis.llen(`snapshots:${boardId}:${userId}`);
+        socket.emit('history:state', { undoDepth, redoDepth: 0 });
       } catch (redisErr) {
         logger.warn('Snapshot save failed (non-fatal)', { boardId, error: redisErr });
       }
@@ -384,6 +391,8 @@ export class ElementEvents {
       // C1: Save snapshot only on DB success; Redis failure is non-fatal
       try {
         await this.saveSnapshot(boardId, userId, preSnapshot);
+        const undoDepth = await redis.llen(`snapshots:${boardId}:${userId}`);
+        socket.emit('history:state', { undoDepth, redoDepth: 0 });
       } catch (redisErr) {
         logger.warn('Snapshot save failed (non-fatal)', { boardId, error: redisErr });
       }
@@ -529,6 +538,8 @@ export class ElementEvents {
       // C1: Save snapshot only on DB success; Redis failure is non-fatal
       try {
         await this.saveSnapshot(boardId, userId, preSnapshot);
+        const undoDepth = await redis.llen(`snapshots:${boardId}:${userId}`);
+        socket.emit('history:state', { undoDepth, redoDepth: 0 });
       } catch (redisErr) {
         logger.warn('Snapshot save failed (non-fatal)', { boardId, error: redisErr });
       }

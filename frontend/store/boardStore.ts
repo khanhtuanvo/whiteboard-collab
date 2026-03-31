@@ -6,7 +6,8 @@ export interface ActiveUser {
   userId: string;
   userName: string;
   userColor: string;
-  cursor: { x: number; y: number };
+  // null until the user has emitted at least one cursor:move event
+  cursor: { x: number; y: number } | null;
   lastSeen: number;
 }
 
@@ -59,7 +60,11 @@ export const useBoardStore = create<BoardState>((set) => ({
       return { elements: [...state.elements, element] };
     }),
 
-  setActiveUsers: (activeUsers) => set({ activeUsers }),
+  // Reset cursor to null so users don't appear at (0,0) before they move.
+  // Cursors update at ~30fps via cursor:update events, so they appear almost immediately.
+  setActiveUsers: (users) => set({
+    activeUsers: users.map(u => ({ ...u, cursor: null })),
+  }),
 
   updateUserCursor: (userId, x, y) =>
     set((state) => ({
@@ -74,7 +79,7 @@ export const useBoardStore = create<BoardState>((set) => ({
       return {
         activeUsers: [
           ...state.activeUsers,
-          { ...user, cursor: { x: 0, y: 0 }, lastSeen: Date.now() },
+          { ...user, cursor: null, lastSeen: Date.now() },
         ],
       };
     }),

@@ -1,31 +1,17 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getSocket } from '@/lib/socket';
-import { boardService } from '@/lib/boardService';
-import { useBoardStore } from '@/store/boardStore';
-
-interface Props {
-  boardId: string;
-}
 
 const MAX_FAILS = 5;
 
-export default function ConnectionBanner({ boardId }: Props) {
+export default function ConnectionBanner() {
   const [status, setStatus] = useState<'connected' | 'reconnecting' | 'failed'>('connected');
   const [dismissed, setDismissed] = useState(false);
   const failCount = useRef(0);
-  const setElements = useBoardStore((state) => state.setElements);
 
-  const resync = useCallback(async () => {
-    try {
-      const elements = await boardService.getBoardElements(boardId);
-      setElements(elements);
-    } catch {
-      // Ignore resync errors — the socket will push updates as they arrive
-    }
-  }, [boardId, setElements]);
-
+  // Board resync on reconnect is handled by useWebSocket (onReconnect → loadBoard).
+  // This component is responsible only for the banner UI.
   useEffect(() => {
     const socket = getSocket();
 
@@ -38,7 +24,6 @@ export default function ConnectionBanner({ boardId }: Props) {
     const handleConnect = () => {
       failCount.current = 0;
       setStatus('connected');
-      resync();
     };
 
     const handleReconnectAttempt = () => {
@@ -57,7 +42,7 @@ export default function ConnectionBanner({ boardId }: Props) {
       socket.off('connect', handleConnect);
       socket.io.off('reconnect_attempt', handleReconnectAttempt);
     };
-  }, [resync]);
+  }, []);
 
   if (status === 'connected' || dismissed) return null;
 

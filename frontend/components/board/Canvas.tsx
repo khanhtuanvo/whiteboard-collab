@@ -67,14 +67,15 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
   const panStartRef = useRef<{ x: number; y: number } | null>(null);
   const spaceHeldRef = useRef(false);
 
-  // Copy/paste clipboard
-  const clipboardRef = useRef<{ elementId: string } | null>(null);
+  // Copy/paste clipboard — holds one or more element IDs for multi-select support
+  const clipboardRef = useRef<{ elementIds: string[] } | null>(null);
 
   // Tracks an element whose group was removed for in-canvas sticky editing
   const editingStickyIdRef = useRef<string | null>(null);
 
   // Tracks the optimistic UUID of the element just created locally so we can auto-select it on arrival
   const pendingSelectIdRef = useRef<string | null>(null);
+
 
   // Keep latest prop values in refs so stable callbacks never go stale
   const selectedToolRef = useRef(selectedTool);
@@ -181,7 +182,16 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       case ElementType.LINE: {
         if (properties.pathData) {
           // Freehand pen path — path commands are in local coordinates
-          return new fabric.Path(JSON.parse(properties.pathData), {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let parsedPath: any;
+          try {
+            parsedPath = JSON.parse(properties.pathData);
+          } catch {
+            console.error('[Canvas] Malformed pathData for element', element.id);
+            return null;
+          }
+          // parsedPath is TComplexPathData at runtime; cast suppresses the unknown-type error
+          return new fabric.Path(parsedPath as string, {
             ...base,
             left: properties.x,
             top: properties.y,
@@ -293,6 +303,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
           properties: { ...element.properties, text: newText },
         });
       }
+      onGestureEndRef.current?.();
       canvas.renderAll();
     });
   }, []);
@@ -322,6 +333,9 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     // Both clicks of a double-click will bail, preventing duplicate element creation.
     // The mouse:dblclick handler handles entering edit mode on existing elements.
     if (selectedToolRef.current === 'text' || selectedToolRef.current === 'sticky_note') {
+      // Suppress mousedown while the element created by the previous click hasn't
+      // arrived from the server yet — correct regardless of network latency.
+      if (pendingSelectIdRef.current !== null) return;
       const canvas = fabricCanvasRef.current;
       if (canvas?.findTarget(e.e)) return;
     }
@@ -445,6 +459,14 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     pendingSelectIdRef.current = optimisticId;
     onElementCreateRef.current(elementData);
     onToolResetRef.current?.();
+    // Clear pendingSelectIdRef if the server doesn't echo the client UUID within 5 s.
+    // Prevents permanent suppression of future text/sticky creation on ID-overriding backends.
+    const capturedId = optimisticId;
+    setTimeout(() => {
+      if (pendingSelectIdRef.current === capturedId) {
+        pendingSelectIdRef.current = null;
+      }
+    }, 5000);
     isDrawingRef.current = false;
     drawStartRef.current = null;
   }, []);
@@ -459,31 +481,43 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       const element = elementsRef.current.find(el => el.id === elementId);
       if (!element) return;
 
-      // Objects inside an ActiveSelection have group-relative coordinates;
-      // use getBoundingRect() for absolute canvas coordinates.
-      // Standalone objects: left/top are already absolute top-left (originX defaults to 'left').
+      // Standalone objects: left/top are absolute canvas coords (originX: 'left').
+      // Grouped objects: left/top are group-relative — apply the group's transform.
+      // Use transformPoint (not getBoundingRect) so stroke does not inflate the stored position.
       const isInGroup = (child as any).group?.type === 'activeSelection';
       let absLeft: number, absTop: number;
       if (isInGroup) {
-        const br = child.getBoundingRect();
-        absLeft = br.left;
-        absTop = br.top;
+        const groupMatrix = (child as any).group.calcTransformMatrix();
+        const pt = fabric.util.transformPoint(
+          new fabric.Point(child.left ?? 0, child.top ?? 0),
+          groupMatrix
+        );
+        absLeft = pt.x;
+        absTop = pt.y;
       } else {
         absLeft = child.left ?? 0;
         absTop = child.top ?? 0;
       }
 
-      onElementUpdateRef.current(elementId, {
-        properties: {
-          ...element.properties,
-          x: absLeft,
-          y: absTop,
-          width: child.width!,        // raw base — never pre-multiplied by scale
-          height: child.height!,      // raw base — never pre-multiplied by scale
-          scaleX: child.scaleX ?? 1,
-          scaleY: child.scaleY ?? 1,
-        },
-      });
+      // For LINE/ARROW the endpoint (x2/y2) is an absolute canvas coordinate.
+      // Shift it by the same delta as the origin so geometry is preserved after a move.
+      const updates = {
+        ...element.properties,
+        x: absLeft,
+        y: absTop,
+        width: child.width!,        // raw base — never pre-multiplied by scale
+        height: child.height!,      // raw base — never pre-multiplied by scale
+        scaleX: child.scaleX ?? 1,
+        scaleY: child.scaleY ?? 1,
+      };
+      if (element.properties.x2 !== undefined) {
+        const deltaX = absLeft - (element.properties.x ?? 0);
+        const deltaY = absTop - (element.properties.y ?? 0);
+        updates.x2 = element.properties.x2 + deltaX;
+        updates.y2 = (element.properties.y2 ?? 0) + deltaY;
+      }
+
+      onElementUpdateRef.current(elementId, { properties: updates });
     };
 
     if ((obj as any).type === 'activeSelection') {
@@ -491,6 +525,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     } else {
       emitUpdate(obj);
     }
+    onGestureEndRef.current?.();
   }, []);
 
   // ─── Init canvas once ────────────────────────────────────────────────────────
@@ -557,15 +592,17 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       onZoomChangeRef.current?.(zoom);
     };
 
-    // Selection tracking
-    const handleSelectionCreated = (e: any) => {
-      const obj = e.selected?.[0];
-      const elementId = (obj as any)?.data?.elementId as string | undefined;
+    // Selection tracking — report null for multi-select so the ColorPicker hides
+    const handleSelectionCreated = () => {
+      const all = canvas.getActiveObjects();
+      if (all.length !== 1) { onSelectionChangeRef.current?.(null); return; }
+      const elementId = (all[0] as any)?.data?.elementId as string | undefined;
       onSelectionChangeRef.current?.(elementId ?? null);
     };
     const handleSelectionUpdated = (e: any) => {
-      const obj = e.selected?.[0];
-      const elementId = (obj as any)?.data?.elementId as string | undefined;
+      const all = canvas.getActiveObjects();
+      if (all.length !== 1) { onSelectionChangeRef.current?.(null); return; }
+      const elementId = (all[0] as any)?.data?.elementId as string | undefined;
       onSelectionChangeRef.current?.(elementId ?? null);
     };
     const handleSelectionCleared = () => {
@@ -574,9 +611,16 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
 
     // Keyboard handlers
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Space → grab/pan cursor
+      // Space → grab/pan cursor; prevent Fabric from selecting/moving objects on click
       if (e.code === 'Space' && !e.repeat) {
         spaceHeldRef.current = true;
+        canvas.selection = false;
+        canvas.forEachObject(o => {
+          // Only toggle real elements — leave ephemeral objects (bgRect, standaloneText
+          // from sticky-note edit mode) in their explicit non-selectable state.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if ((o as any).data?.elementId) o.selectable = false;
+        });
         canvas.defaultCursor = 'grab';
         canvas.renderAll();
         return;
@@ -612,30 +656,37 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         return;
       }
 
-      // Ctrl+C → copy
+      // Ctrl+C → copy (supports multi-select)
       if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-        const obj = canvas.getActiveObject();
-        if (!obj) return;
-        const elementId = (obj as any).data?.elementId as string | undefined;
-        if (elementId) clipboardRef.current = { elementId };
+        const ids = canvas.getActiveObjects()
+          .map(o => (o as any).data?.elementId as string | undefined)
+          .filter(Boolean) as string[];
+        if (ids.length > 0) clipboardRef.current = { elementIds: ids };
         return;
       }
 
-      // Ctrl+V → paste with +20 offset
+      // Ctrl+V → paste with +20 offset (supports multi-select)
       if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
         if (!clipboardRef.current) return;
-        const { elementId } = clipboardRef.current;
-        const element = elementsRef.current.find(el => el.id === elementId);
-        if (!element) return;
-        onElementCreateRef.current({
-          boardId: boardIdRef.current,
-          type: element.type,
-          properties: {
+        clipboardRef.current.elementIds.forEach(elementId => {
+          const element = elementsRef.current.find(el => el.id === elementId);
+          if (!element) return;
+          const pastedProps = {
             ...element.properties,
             x: (element.properties.x ?? 0) + 20,
             y: (element.properties.y ?? 0) + 20,
-          },
-          zIndex: element.zIndex,
+            // LINE/ARROW store the endpoint as absolute coords — shift by the same offset.
+            ...(element.properties.x2 !== undefined && {
+              x2: element.properties.x2 + 20,
+              y2: (element.properties.y2 ?? 0) + 20,
+            }),
+          };
+          onElementCreateRef.current({
+            boardId: boardIdRef.current,
+            type: element.type,
+            properties: pastedProps,
+            zIndex: element.zIndex,
+          });
         });
       }
     };
@@ -643,6 +694,11 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     const handleKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') {
         spaceHeldRef.current = false;
+        canvas.selection = selectedToolRef.current === 'select';
+        canvas.forEachObject(o => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if ((o as any).data?.elementId) o.selectable = true;
+        });
         canvas.defaultCursor = selectedToolRef.current === 'select' ? 'default' : 'crosshair';
         canvas.renderAll();
       }
@@ -666,6 +722,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
           onElementUpdateRef.current(elementId, {
             properties: { ...element.properties, text: itext.text ?? '' },
           });
+          onGestureEndRef.current?.();
         });
         return;
       }
@@ -689,6 +746,11 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       const bounds = path.getBoundingRect();
       const penOptimisticId = crypto.randomUUID();
       pendingSelectIdRef.current = penOptimisticId;
+      setTimeout(() => {
+        if (pendingSelectIdRef.current === penOptimisticId) {
+          pendingSelectIdRef.current = null;
+        }
+      }, 5000);
       onElementCreateRef.current({
         id: penOptimisticId,
         boardId: boardIdRef.current,
@@ -754,8 +816,10 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     }
     // Marquee (rubber-band) selection only active in select mode
     canvas.selection = isSelect;
-    // Objects are always individually selectable regardless of tool
-    canvas.forEachObject(obj => { obj.selectable = true; });
+    // Restore selectable state — but don't override Space-pan mode, which manages it separately
+    if (!spaceHeldRef.current) {
+      canvas.forEachObject(obj => { obj.selectable = true; });
+    }
     canvas.defaultCursor = isSelect ? 'default' : 'crosshair';
     canvas.renderAll();
   }, [selectedTool]);
@@ -806,6 +870,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
                 onElementUpdateRef.current(el.id, {
                   properties: { ...element.properties, text: itext.text ?? '' },
                 });
+                onGestureEndRef.current?.();
               });
             } else if (el.type === ElementType.STICKY_NOTE) {
               // Defer one frame so the object is fully settled on the canvas
@@ -922,8 +987,10 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       if (activeObj && (activeObj as any).isEditing) {
         (activeObj as fabric.IText).exitEditing();
       }
-      // Clear sticky note inline-edit state
-      editingStickyIdRef.current = null;
+      // Do NOT clear editingStickyIdRef here — the once('editing:exited') handler in
+      // enterStickyEditMode owns that transition and clears it after removing phantom objects.
+      // Clearing it here races with the elements sync effect and can cause the Group to be
+      // re-added while bgRect/standaloneText are still present on the canvas.
       canvas.discardActiveObject();
       canvas.renderAll();
     },

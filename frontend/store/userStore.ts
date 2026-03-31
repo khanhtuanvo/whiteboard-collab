@@ -21,7 +21,7 @@ export const useUserStore = create<UserState>((set) => ({
     },
     logout: async () => {
         try {
-            await api.post('/auth/logout');
+            await api.post('/api/auth/logout');
         } catch {
             // ignore — clear local state regardless
         }
