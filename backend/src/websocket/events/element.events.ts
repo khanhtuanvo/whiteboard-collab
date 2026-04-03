@@ -4,7 +4,7 @@ import prisma from '../../config/database';
 import logger from '../../config/logger';
 import { v4 as uuidv4 } from 'uuid';
 import { ElementType, Role, Prisma } from '@prisma/client';
-import { z } from 'zod';  
+import { z } from 'zod';
 // Strict schema — rejects unknown keys to block prototype-pollution payloads.
 // Add fields here as the canvas feature set grows.
 const PropertiesSchema = z.object({
@@ -137,16 +137,26 @@ export class ElementEvents {
   }
 
   /**
-   * C1 + C2: Push an already-captured snapshot to the user-namespaced undo stack
-   * and clear that user's redo stack. Must be called AFTER a successful DB write
-   * and wrapped in its own try/catch by the caller so Redis failures never surface
-   * as DB errors.
+   * F3 — Lua-atomic saveSnapshot.
+   *
+   * All three Redis operations (LPUSH, LTRIM, DEL) execute in a single Lua
+   * script. Unlike MULTI/EXEC, a Lua script is guaranteed to run atomically
+   * and cannot be partially committed: if Redis crashes mid-script the entire
+   * script is rolled back on recovery. This prevents the redo stack from
+   * surviving a new mutation when a crash occurs between LTRIM and DEL.
    */
   private async saveSnapshot(boardId: string, userId: string, snapshot: ElementSnapshot[]): Promise<void> {
-    await redis.lpush(`snapshots:${boardId}:${userId}`, JSON.stringify(snapshot));
-    await redis.ltrim(`snapshots:${boardId}:${userId}`, 0, 49);
-    // Any new mutation clears this user's redo stack
-    await redis.del(`redo:${boardId}:${userId}`);
+    const snapshotKey = `snapshots:${boardId}:${userId}`;
+    const redoKey = `redo:${boardId}:${userId}`;
+    const serialized = JSON.stringify(snapshot);
+
+    const luaSave = `
+      redis.call('LPUSH', KEYS[1], ARGV[1])
+      redis.call('LTRIM', KEYS[1], 0, 49)
+      redis.call('DEL', KEYS[2])
+    `;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (redis as any).eval(luaSave, 2, snapshotKey, redoKey, serialized);
   }
 
   private async restoreSnapshot(
@@ -161,7 +171,7 @@ export class ElementEvents {
             id: el.id,
             boardId: el.boardId,
             type: el.type as ElementType,
-            properties: (el.properties ?? Prisma.JsonNull) as Prisma.InputJsonValue | Prisma.NullTypes.JsonNull,  // ← cast here
+            properties: (el.properties ?? Prisma.JsonNull) as Prisma.InputJsonValue | Prisma.NullTypes.JsonNull,
             zIndex: el.zIndex ?? 0,
             createdBy: el.createdBy,
           })),
@@ -278,13 +288,26 @@ export class ElementEvents {
         return;
       }
 
-      // H2: Validate BEFORE the live branch so unvalidated properties are never broadcast
+      // F5/F6: Validate BEFORE live branch — unvalidated properties must never be broadcast.
       const propertiesResult = PropertiesSchema.safeParse(properties);
       if (!propertiesResult.success) {
         socket.emit('error', { message: 'Invalid properties', details: propertiesResult.error.issues });
         return;
       }
 
+      // F6: Live drag ticks skip the DB read entirely. The access check above is the
+      // authorization gate; the socket can only be in room board:${boardId} if it was
+      // admitted by the join handler. The boardId+elementId ownership is verified on
+      // the gesture-end (commit) tick that always follows.
+      if (live) {
+        io.to(`board:${boardId}`).emit('element:updated', {
+          id: elementId,
+          properties: propertiesResult.data,  // F5: broadcast validated data, not raw input
+        });
+        return;
+      }
+
+      // F6: DB read only on the commit (non-live) path
       const currentElement = await prisma.element.findUnique({
         where: { id: elementId },
       });
@@ -294,32 +317,38 @@ export class ElementEvents {
         return;
       }
 
-      // Live drag ticks: broadcast the client's full payload directly — no DB read/merge
-      // needed here. The pre-drag DB state is preserved for the snapshot at gesture-end.
-      if (live) {
-        io.to(`board:${boardId}`).emit('element:updated', {
-          id: elementId,
-          properties,
-        });
-        return;
-      }
-
       // C1: Capture pre-mutation state BEFORE the DB write
       const preSnapshot = await this.readCurrentSnapshot(boardId);
 
-      // Gesture-end (commit) update: persist.
-      const updatedElement = await prisma.$transaction(async (tx) => {
+      // F4 + F5: Return a struct from the transaction so beforeProperties is captured
+      // from the same transactional read as the update, eliminating the TOCTOU window
+      // that existed when currentElement (fetched outside) was used as the "before" value.
+      const { updatedElement, beforeProperties } = await prisma.$transaction(async (tx) => {
         const elem = await tx.element.findUnique({ where: { id: elementId } });
         if (!elem) throw new Error('Element not found');
-        return tx.element.update({
+
+        const before = elem.properties;
+
+        // F5: Guard against non-object JSON values (null, primitives, arrays) stored
+        // in the DB. Spreading a non-object silently drops existing properties.
+        const existing =
+          typeof elem.properties === 'object' &&
+          elem.properties !== null &&
+          !Array.isArray(elem.properties)
+            ? (elem.properties as Record<string, unknown>)
+            : {};
+
+        const updated = await tx.element.update({
           where: { id: elementId },
           data: {
             properties: {
-              ...(elem.properties as Record<string, unknown>),
-              ...properties,
+              ...existing,
+              ...propertiesResult.data,  // F5: use validated data, not raw properties
             },
           },
         });
+
+        return { updatedElement: updated, beforeProperties: before };
       });
 
       // C1: Save snapshot only on DB success; Redis failure is non-fatal
@@ -331,14 +360,15 @@ export class ElementEvents {
         logger.warn('Snapshot save failed (non-fatal)', { boardId, error: redisErr });
       }
 
-      // Add to history (Redis Sorted Set)
+      // F4: Use beforeProperties from inside the transaction — not the outer
+      // currentElement.properties which was fetched before acquiring the tx lock.
       await redis.zadd(
         `history:${boardId}:${userId}`,
         Date.now(),
         JSON.stringify({
           action: 'update',
           elementId,
-          before: currentElement.properties,
+          before: beforeProperties,
           after: updatedElement.properties,
         })
       );
@@ -348,7 +378,7 @@ export class ElementEvents {
         action: 'update',
         elementId,
         userId,
-        data: JSON.stringify(properties),
+        data: JSON.stringify(propertiesResult.data),  // F5: validated data
         timestamp: Date.now().toString(),
       });
 
@@ -425,8 +455,10 @@ export class ElementEvents {
 
   async handleUndo(socket: Socket, io: Server, data: UndoRedoData) {
     const { boardId, userId } = data;
+    const undoKey = `snapshots:${boardId}:${userId}`;
+    const redoKey = `redo:${boardId}:${userId}`;
 
-    // Lua script: atomically read and pop the first snapshot in one operation
+    // Lua script: atomically peek-and-pop — avoids a separate LINDEX + LPOP race.
     const luaAtomicPop = `
       local val = redis.call('lindex', KEYS[1], 0)
       if val then redis.call('lpop', KEYS[1]) end
@@ -439,26 +471,36 @@ export class ElementEvents {
         return;
       }
 
-      // C2: User-namespaced undo key
-      const snapshotStr = await redis.eval(luaAtomicPop, 1, `snapshots:${boardId}:${userId}`) as string | null;
-      if (!snapshotStr) {
-        return;
+      const snapshotStr = await redis.eval(luaAtomicPop, 1, undoKey) as string | null;
+      if (!snapshotStr) return;
+
+      const currentSnapshot = await this.readCurrentSnapshot(boardId);
+      const snapshot = JSON.parse(snapshotStr) as ElementSnapshot[];
+
+      // F1: Restore first. If it fails, re-push the entry so it is not permanently
+      // lost. The re-push is best-effort — if it also fails, the entry is gone and
+      // we log the loss; the throw propagates to the outer catch which emits an error.
+      try {
+        await this.restoreSnapshot(boardId, snapshot);
+      } catch (restoreErr) {
+        await redis.lpush(undoKey, snapshotStr);
+        throw restoreErr;
       }
 
-      // Save current state to user's redo stack before restoring
-      const currentSnapshot = await this.readCurrentSnapshot(boardId);
-      // C2: User-namespaced redo key
-      await redis.lpush(`redo:${boardId}:${userId}`, JSON.stringify(currentSnapshot));
-      await redis.ltrim(`redo:${boardId}:${userId}`, 0, 49);
-
-      const snapshot = JSON.parse(snapshotStr) as ElementSnapshot[];
-      await this.restoreSnapshot(boardId, snapshot);
+      // F1: Restore succeeded — commit the redo push atomically (lpush + ltrim
+      // in one MULTI/EXEC so the list cannot exceed 50 even if the process dies
+      // between the two commands).
+      await redis.multi()
+        .lpush(redoKey, JSON.stringify(currentSnapshot))
+        .ltrim(redoKey, 0, 49)
+        .exec();
 
       io.to(`board:${boardId}`).emit('element:snapshot', snapshot);
 
-      // C3: Emit actual stack depths back to the originating socket
-      const undoDepth = await redis.llen(`snapshots:${boardId}:${userId}`);
-      const redoDepth = await redis.llen(`redo:${boardId}:${userId}`);
+      const [undoDepth, redoDepth] = await Promise.all([
+        redis.llen(undoKey),
+        redis.llen(redoKey),
+      ]);
       socket.emit('history:state', { undoDepth, redoDepth });
 
       logger.info('Undo applied', { boardId, userId, elementCount: snapshot.length });
@@ -470,8 +512,10 @@ export class ElementEvents {
 
   async handleRedo(socket: Socket, io: Server, data: UndoRedoData) {
     const { boardId, userId } = data;
+    const undoKey = `snapshots:${boardId}:${userId}`;
+    const redoKey = `redo:${boardId}:${userId}`;
 
-    // Lua script: atomically read and pop the first redo snapshot
+    // Lua script: atomically peek-and-pop the redo entry.
     const luaAtomicPop = `
       local val = redis.call('lindex', KEYS[1], 0)
       if val then redis.call('lpop', KEYS[1]) end
@@ -484,30 +528,43 @@ export class ElementEvents {
         return;
       }
 
-      // C2: User-namespaced redo key
-      const redoStr = await redis.eval(luaAtomicPop, 1, `redo:${boardId}:${userId}`) as string | null;
-      if (!redoStr) {
-        return;
-      }
+      const redoStr = await redis.eval(luaAtomicPop, 1, redoKey) as string | null;
+      if (!redoStr) return;
 
-      // H4: Save current state back to undo stack; abort redo if lpush fails
       const currentSnapshot = await this.readCurrentSnapshot(boardId);
-      // C2: User-namespaced undo key
-      const pushed = await redis.lpush(`snapshots:${boardId}:${userId}`, JSON.stringify(currentSnapshot));
-      if (!pushed) {
-        socket.emit('error', { message: 'Failed to redo: could not save undo state' });
-        return;
-      }
-      await redis.ltrim(`snapshots:${boardId}:${userId}`, 0, 49);
-
       const snapshot = JSON.parse(redoStr) as ElementSnapshot[];
-      await this.restoreSnapshot(boardId, snapshot);
+
+      // F2: Restore first. If it fails, re-push the redo entry so it is not lost.
+      try {
+        await this.restoreSnapshot(boardId, snapshot);
+      } catch (restoreErr) {
+        await redis.lpush(redoKey, redoStr);
+        throw restoreErr;
+      }
+
+      // F2: Restore succeeded — push current state back to undo.
+      // This is non-fatal: the board is already correctly restored. If the undo push
+      // fails, the user simply cannot undo this redo; they are not left with a
+      // corrupted board. The dead `if (!pushed)` check has been removed — lpush
+      // returns the list length (always ≥ 1 on success) and throws on failure.
+      try {
+        await redis.multi()
+          .lpush(undoKey, JSON.stringify(currentSnapshot))
+          .ltrim(undoKey, 0, 49)
+          .exec();
+      } catch (redisErr) {
+        logger.warn('Redo undo-push failed (non-fatal): board restored but undo entry lost', {
+          boardId,
+          error: redisErr,
+        });
+      }
 
       io.to(`board:${boardId}`).emit('element:snapshot', snapshot);
 
-      // C3: Emit actual stack depths back to the originating socket
-      const undoDepth = await redis.llen(`snapshots:${boardId}:${userId}`);
-      const redoDepth = await redis.llen(`redo:${boardId}:${userId}`);
+      const [undoDepth, redoDepth] = await Promise.all([
+        redis.llen(undoKey),
+        redis.llen(redoKey),
+      ]);
       socket.emit('history:state', { undoDepth, redoDepth });
 
       logger.info('Redo applied', { boardId, userId, elementCount: snapshot.length });

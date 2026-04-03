@@ -1,17 +1,21 @@
 name: Deploy to AWS
 
+# Only deploy after the CI pipeline passes on main — never deploy untested code.
 on:
-  push:
+  workflow_run:
+    workflows: ["CI pipeline"]
+    types: [completed]
     branches: [main]
 
 jobs:
   deploy:
+    # Skip if CI failed or was cancelled
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-    # Only deploy after CI passes — no need to re-run tests here
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1
@@ -23,31 +27,39 @@ jobs:
             set -e
             cd ~/whiteboard-collab
 
-            # Save current image tags for rollback
-            OLD_BACKEND=$(docker inspect --format='{{.Image}}' whiteboard-backend 2>/dev/null || echo "none")
+            # Save current commit so we can rebuild the old code on rollback
+            PREV_COMMIT=$(git rev-parse HEAD)
 
             # Pull latest code
             git fetch --prune
             git reset --hard origin/main
 
-            # Rebuild and restart
-            docker compose up --build --detach --remove-orphans
+            # Build new images up front — fail fast before touching running services
+            docker compose build
 
-            # Health check — wait up to 30s for backend to respond
-            echo "Waiting for backend..."
-            for i in $(seq 1 6); do
+            # Run database migrations in an ephemeral container.
+            # docker compose run respects depends_on, so it waits for mysql to
+            # be healthy before executing the migration.
+            docker compose run --rm backend npx prisma migrate deploy
+
+            # Replace running containers with newly built images
+            docker compose up --detach --remove-orphans
+
+            # Health check — wait up to 60s for backend to respond
+            echo "Waiting for backend to be healthy..."
+            for i in $(seq 1 12); do
               if docker compose exec -T backend wget -qO- http://localhost:4000/health > /dev/null 2>&1; then
-                echo "Backend healthy"
+                echo "Backend healthy — deployment complete"
                 break
               fi
-              if [ $i -eq 6 ]; then
-                echo "Health check failed — rolling back"
-                # Roll back to previous image if available
-                [ "$OLD_BACKEND" != "none" ] && docker compose down && docker compose up --detach
+              if [ $i -eq 12 ]; then
+                echo "Health check failed after 60s — rolling back to $PREV_COMMIT"
+                git reset --hard "$PREV_COMMIT"
+                docker compose up --build --detach --remove-orphans
                 exit 1
               fi
               sleep 5
             done
 
-            # Clean up old images
-            docker image prune -f
+            # Clean up images that haven't been used in the last 24h
+            docker image prune -f --filter "until=24h"

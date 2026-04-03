@@ -6,4 +6,9 @@ module.exports = {
   testMatch: ['**/*.test.ts'],
   // Automatically clear mock state between every test
   clearMocks: true,
+  globals: {
+    'ts-jest': {
+      tsconfig: 'tsconfig.test.json',
+    },
+  },
 };

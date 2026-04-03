@@ -68,9 +68,11 @@ services:
       dockerfile: ../docker/Dockerfile.frontend
       # NEXT_PUBLIC_* must be passed at build time — Next.js inlines them into
       # the JS bundle and they are NOT available from runtime environment.
+      # The :? syntax causes `docker compose build` to fail immediately with a
+      # clear error if either variable is missing from the environment/.env file.
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost/api}
-        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-http://localhost}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?NEXT_PUBLIC_API_URL must be set in .env}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:?NEXT_PUBLIC_WS_URL must be set in .env}
     container_name: whiteboard-frontend
     restart: unless-stopped
     depends_on:
@@ -91,8 +93,13 @@ services:
     restart: unless-stopped
     environment:
       ML_SERVICE_KEY: ${ML_SERVICE_KEY}
-    profiles:
-      - ml
+    # start_period is long because the transformer model loads on first startup
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/ready')\" 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
   nginx:
     image: nginx:alpine

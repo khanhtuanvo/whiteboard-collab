@@ -1,9 +1,15 @@
+import logging
 import math
+import os
+
 from sklearn.cluster import KMeans
+
 from app.services.embedding_service import EmbeddingService
 
-CANVAS_WIDTH = 2000
-CANVAS_HEIGHT = 1500
+logger = logging.getLogger(__name__)
+
+CANVAS_WIDTH = int(os.environ.get("CANVAS_WIDTH", 2000))
+CANVAS_HEIGHT = int(os.environ.get("CANVAS_HEIGHT", 1500))
 NOTE_WIDTH = 200
 NOTE_HEIGHT = 150
 NOTE_GAP = 20
@@ -13,12 +19,20 @@ class ClusteringService:
     def __init__(self):
         self._embedding_service = EmbeddingService()
 
-    def cluster(self, notes):
+    @property
+    def is_ready(self) -> bool:
+        return self._embedding_service.is_ready
+
+    def cluster(self, notes, k: int | None = None):
         n = len(notes)
-        k = math.ceil(math.sqrt(n / 2))
+        if k is None:
+            k = math.ceil(math.sqrt(n / 2))
         k = max(2, min(k, n))
 
         texts = [note.text or "(empty)" for note in notes]
+
+        logger.info("Clustering %d notes into %d clusters", n, k)
+
         embeddings = self._embedding_service.embed(texts)
 
         kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
@@ -73,4 +87,5 @@ class ClusteringService:
                 }
             )
 
+        logger.info("Clustering complete: %d notes assigned to %d clusters", n, k)
         return results

@@ -18,6 +18,6 @@ COPY --from=builder /app/package.json ./package.json
 RUN addgroup -g 1001 appuser && adduser -D -u 1001 -G appuser appuser
 USER appuser
 EXPOSE 4000
-# Run pending migrations, then start the server.
-# exec replaces the shell so node is PID 1 and receives SIGTERM correctly.
-CMD ["sh", "-c", "npx prisma migrate deploy && exec node dist/server.js"]
+# Migrations are run separately by the deploy script before containers start.
+# This keeps startup fast and prevents a hanging migration from blocking healthchecks.
+CMD ["node", "dist/server.js"]
