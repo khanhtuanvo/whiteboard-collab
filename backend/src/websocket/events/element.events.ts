@@ -311,7 +311,7 @@ export class ElementEvents {
         typeof rawPayload.zIndex === 'number' && Number.isFinite(rawPayload.zIndex)
           ? rawPayload.zIndex
           : undefined;
-      const { zIndex: _stripped, ...propertiesWithoutZIndex } = rawPayload;
+      const { zIndex: _, ...propertiesWithoutZIndex } = rawPayload;
 
       // F5/F6: Validate BEFORE live branch — unvalidated properties must never be broadcast.
       const propertiesResult = PropertiesSchema.safeParse(propertiesWithoutZIndex);

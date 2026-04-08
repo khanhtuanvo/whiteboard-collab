@@ -18,7 +18,10 @@ module.exports = [
     rules: {
       // TypeScript-specific
       '@typescript-eslint/no-explicit-any': 'warn',
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+      }],
 
       // General quality
       'no-console': 'off',          // backend logging is intentional
