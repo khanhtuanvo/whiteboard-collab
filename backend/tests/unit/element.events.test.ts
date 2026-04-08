@@ -78,9 +78,9 @@ import { ElementEvents } from '../../src/websocket/events/element.events';
 import { ElementType, Role } from '@prisma/client';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
-const BOARD_ID = 'board-aaa-111';
+const BOARD_ID = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
 const USER_ID  = 'user-bbb-222';
-const ELEM_ID  = 'elem-ccc-333';
+const ELEM_ID  = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 const BASE_PROPS = { x: 10, y: 20 };
 

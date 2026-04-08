@@ -58,7 +58,7 @@ describe('GET /api/boards/:id/elements', () => {
   const app = createTestApp();
 
   const USER_ID = 'test-user-id';
-  const BOARD_ID = 'test-board-id';
+  const BOARD_ID = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
   let authToken: string;
 
   const mockBoard = {
@@ -153,7 +153,7 @@ describe('GET /api/boards/:id/elements', () => {
 describe('Public board routes (no auth required)', () => {
   const app = createTestApp();
 
-  const PUBLIC_BOARD_ID = 'public-board-id';
+  const PUBLIC_BOARD_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 
   const publicBoard = {
     id: PUBLIC_BOARD_ID,

@@ -50,7 +50,7 @@ jest.mock('../../src/config/redis', () => ({
     rpush: jest.fn().mockResolvedValue(1),
     lindex: jest.fn().mockResolvedValue(null),
     lpop: jest.fn().mockResolvedValue(null),
-    eval: jest.fn().mockResolvedValue(null),
+    eval: jest.fn().mockResolvedValue([]),
     del: jest.fn().mockResolvedValue(1),
     hset: jest.fn().mockResolvedValue(1),
     hgetall: jest.fn().mockResolvedValue({}),
@@ -73,7 +73,7 @@ import { setupSocketHandlers } from '../../src/websocket/socket.handler';
 import { generateToken } from '../../src/utils/jwt';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-const BOARD_ID   = 'board-socket-test';
+const BOARD_ID   = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const OWNER_ID   = 'owner-socket-test';
 const VIEWER_ID  = 'viewer-socket-test';
 const ELEMENT_ID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
