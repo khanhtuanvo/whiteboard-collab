@@ -175,8 +175,15 @@ export function useWebSocket({
     };
   }, [boardId, userName, userColor]);
 
+  const lastCursorEmitRef = useRef(0);
+  const CURSOR_EMIT_INTERVAL = 35; // Throttle to ~28 cursor moves/sec (backend limit is 30/sec)
+
   const emitCursorMove = useCallback((x: number, y: number) => {
-    getSocket().emit('cursor:move', { boardId, x, y });
+    const now = Date.now();
+    if (now - lastCursorEmitRef.current >= CURSOR_EMIT_INTERVAL) {
+      lastCursorEmitRef.current = now;
+      getSocket().emit('cursor:move', { boardId, x, y });
+    }
   }, [boardId]);
 
   const emitCreateElement = useCallback((type: ElementType, properties: Record<string, unknown>, id?: string) => {
