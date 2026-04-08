@@ -11,6 +11,11 @@ RUN npm run build
 # Runtime stage — lean image with only what's needed to run
 FROM node:20-alpine
 WORKDIR /app
+
+# Node 24 OpenSSL compatibility (passed in from docker compose build --build-arg)
+ARG NODE_OPTIONS=--openssl-legacy-provider
+ENV NODE_OPTIONS=$NODE_OPTIONS
+
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/prisma ./prisma
@@ -18,6 +23,4 @@ COPY --from=builder /app/package.json ./package.json
 RUN addgroup -g 1001 appuser && adduser -D -u 1001 -G appuser appuser
 USER appuser
 EXPOSE 4000
-# Migrations are run separately by the deploy script before containers start.
-# This keeps startup fast and prevents a hanging migration from blocking healthchecks.
 CMD ["node", "dist/server.js"]
