@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { Element, ElementType } from '@/types/element';
+import axios from 'axios';
 import api from '@/lib/api';
 
 interface ClusterResult {
@@ -38,8 +39,8 @@ export default function ClusterSuggestions({ boardId, elements, onElementUpdate 
       }));
       const { data } = await api.post<ClusterResult[]>(`/api/boards/${boardId}/ai/cluster`, payload);
       setSuggestions(data);
-    } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? 'Failed to get cluster suggestions');
+    } catch (err: unknown) {
+      toast.error(axios.isAxiosError(err) ? (err.response?.data?.error ?? 'Failed to get cluster suggestions') : 'Failed to get cluster suggestions');
     } finally {
       setLoading(false);
     }

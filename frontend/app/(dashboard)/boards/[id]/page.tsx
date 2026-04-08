@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
+import axios from 'axios';
 import { toast } from 'sonner';
 import { useUserStore } from '@/store/userStore';
 import { useBoardStore } from '@/store/boardStore';
@@ -67,7 +68,7 @@ export default function BoardPage() {
   // abort key ensures only the most-recent in-flight load applies its result.
   type BufferedEvent =
     | { kind: 'created';  payload: Element }
-    | { kind: 'updated';  id: string; properties: Record<string, unknown> }
+    | { kind: 'updated';  id: string; properties: Record<string, unknown>; zIndex?: number }
     | { kind: 'deleted';  id: string }
     | { kind: 'snapshot'; elements: Element[] }
     | { kind: 'cleared' };
@@ -125,12 +126,12 @@ export default function BoardPage() {
     applyRemoteChange(el);
   }, [applyRemoteChange]);
 
-  const handleElementUpdated = useCallback((id: string, properties: Record<string, unknown>) => {
+  const handleElementUpdated = useCallback((id: string, properties: Record<string, unknown>, zIndex?: number) => {
     if (!isInitializedRef.current) {
-      eventQueueRef.current.push({ kind: 'updated', id, properties });
+      eventQueueRef.current.push({ kind: 'updated', id, properties, zIndex });
       return;
     }
-    updateElement(id, properties as Element['properties']);
+    updateElement(id, properties as Element['properties'], zIndex);
   }, [updateElement]);
 
   const handleElementDeleted = useCallback((id: string) => {
@@ -217,7 +218,7 @@ export default function BoardPage() {
             }
             break;
           case 'updated':
-            updateElement(event.id, event.properties as Element['properties']);
+            updateElement(event.id, event.properties as Element['properties'], event.zIndex);
             break;
           case 'deleted':
             removeElement(event.id);
@@ -363,10 +364,19 @@ export default function BoardPage() {
   const handleColorChange = useCallback(
     (changes: { fill?: string; stroke?: string }) => {
       if (isReadOnly || !selectedElementId || !selectedElement) return;
+      // Lines and arrows are open paths — their visual color is the stroke, not fill.
+      // Remap a fill change to stroke so the Fill section in ColorPicker controls the line color.
+      let effectiveChanges = changes;
+      if (
+        (selectedElement.type === ElementType.LINE || selectedElement.type === ElementType.ARROW) &&
+        changes.fill !== undefined
+      ) {
+        const { fill, ...rest } = changes;
+        effectiveChanges = { ...rest, stroke: fill };
+      }
       handleElementUpdate(selectedElementId, {
-        properties: { ...selectedElement.properties, ...changes },
+        properties: { ...selectedElement.properties, ...effectiveChanges },
       });
-      // handleElementUpdate already calls recordAction via its own path
     },
     [selectedElementId, selectedElement, handleElementUpdate, isReadOnly]
   );
@@ -398,8 +408,8 @@ export default function BoardPage() {
       toast.success(`Invited ${shareEmail.trim()} as ${shareRole.toLowerCase()}`);
       setShareEmail('');
       setShareOpen(false);
-    } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? 'Failed to add collaborator');
+    } catch (err: unknown) {
+      toast.error(axios.isAxiosError(err) ? (err.response?.data?.error ?? 'Failed to add collaborator') : 'Failed to add collaborator');
     } finally {
       setSharing(false);
     }
@@ -502,7 +512,11 @@ export default function BoardPage() {
       {!isReadOnly && selectedElement && (
         <div className="absolute top-32 right-4 z-10">
           <ColorPicker
-            fill={selectedElement.properties.fill ?? selectedElement.properties.color}
+            fill={
+              (selectedElement.type === ElementType.LINE || selectedElement.type === ElementType.ARROW)
+                ? selectedElement.properties.stroke
+                : (selectedElement.properties.fill ?? selectedElement.properties.color)
+            }
             stroke={selectedElement.properties.stroke}
             onChange={handleColorChange}
           />

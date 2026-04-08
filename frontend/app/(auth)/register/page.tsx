@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import axios from 'axios';
 import api from '@/lib/api';
 import { useUserStore } from '@/store/userStore';
 
@@ -30,8 +31,8 @@ export default function RegisterPage() {
 
       setUser(user);
       router.push('/boards');
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Registration failed');
+    } catch (err: unknown) {
+      setError(axios.isAxiosError(err) ? (err.response?.data?.error ?? 'Registration failed') : 'Registration failed');
     } finally {
       setLoading(false);
     }

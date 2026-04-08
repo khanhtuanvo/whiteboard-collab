@@ -1,5 +1,6 @@
 import { Socket } from 'socket.io';
 import redis from '../../config/redis';
+import logger from '../../config/logger';
 
 interface CursorMoveData {
   boardId: string;
@@ -32,7 +33,9 @@ export class CursorEvents {
         y
       });
     } catch (error) {
-      console.error('Error updating cursor:', error);
+      // Cursor errors are non-fatal: log and continue silently so a transient
+      // Redis hiccup does not disconnect the user or disrupt other events.
+      logger.error('Error updating cursor', { boardId, userId, error });
     }
   }
 }

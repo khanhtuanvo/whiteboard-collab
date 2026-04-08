@@ -198,6 +198,24 @@ describe('Socket.io event pipeline', () => {
     expect(Array.isArray(users)).toBe(true);
   });
 
+  it('emits history:state with undo/redo depths when joining a board', async () => {
+    (prisma.board.findFirst as jest.Mock).mockResolvedValue(mockBoard);
+    (prisma.boardCollaborator.findMany as jest.Mock).mockResolvedValue([]);
+
+    const redisMock = (jest.requireMock('../../src/config/redis').default as { llen: jest.Mock });
+    redisMock.llen.mockReset();
+    redisMock.llen.mockResolvedValueOnce(3).mockResolvedValueOnce(1);
+
+    ownerSocket.connect();
+    await waitForConnect(ownerSocket);
+
+    const historyStatePromise = waitForEvent<{ undoDepth: number; redoDepth: number }>(ownerSocket, 'history:state');
+    ownerSocket.emit('board:join', { boardId: BOARD_ID, userName: 'Owner', userColor: '#ff0000' });
+
+    const historyState = await historyStatePromise;
+    expect(historyState).toEqual({ undoDepth: 3, redoDepth: 1 });
+  });
+
   // ── element:create → broadcast ─────────────────────────────────────────────
   it('broadcasts element:created to all room members after element:create', async () => {
     (prisma.board.findFirst as jest.Mock).mockResolvedValue(mockBoard);

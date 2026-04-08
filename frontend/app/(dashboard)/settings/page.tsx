@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Image from 'next/image';
 import { useUserStore } from '@/store/userStore';
 import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
@@ -97,9 +98,12 @@ export default function SettingsPage() {
         {/* Avatar preview */}
         <div className="flex items-center gap-4 mb-6">
           {avatarUrl ? (
-            <img
+            <Image
               src={avatarUrl}
               alt={user.name}
+              width={64}
+              height={64}
+              unoptimized
               className="w-16 h-16 rounded-full object-cover border"
             />
           ) : (

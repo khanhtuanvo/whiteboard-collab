@@ -5,6 +5,8 @@ import logger from '../../config/logger';
 import { v4 as uuidv4 } from 'uuid';
 import { ElementType, Role, Prisma } from '@prisma/client';
 import { z } from 'zod';
+const uuidSchema = z.string().uuid();
+
 // Strict schema — rejects unknown keys to block prototype-pollution payloads.
 // Add fields here as the canvas feature set grows.
 const PropertiesSchema = z.object({
@@ -186,6 +188,11 @@ export class ElementEvents {
     const { boardId, userId, type, properties } = data;
 
     try {
+      if (!uuidSchema.safeParse(boardId).success) {
+        socket.emit('error', { message: 'Invalid board ID' });
+        return;
+      }
+
       const hasAccess = await this.checkBoardAccess(boardId, userId, Role.EDITOR);
       if (!hasAccess) {
         socket.emit('error', { message: 'Permission denied' });
@@ -282,14 +289,32 @@ export class ElementEvents {
     const { boardId, elementId, userId, properties, live } = data;
 
     try {
+      if (!uuidSchema.safeParse(boardId).success) {
+        socket.emit('error', { message: 'Invalid board ID' });
+        return;
+      }
+      if (!uuidSchema.safeParse(elementId).success) {
+        socket.emit('error', { message: 'Invalid element ID' });
+        return;
+      }
+
       const hasAccess = await this.checkBoardAccess(boardId, userId, 'EDITOR');
       if (!hasAccess) {
         socket.emit('error', { message: 'Permission denied' });
         return;
       }
 
+      // Extract zIndex before schema validation — it's a top-level DB column, not a
+      // JSON property, so PropertiesSchema (strict) would reject it as an unknown key.
+      const rawPayload = properties as unknown as Record<string, unknown>;
+      const incomingZIndex =
+        typeof rawPayload.zIndex === 'number' && Number.isFinite(rawPayload.zIndex)
+          ? rawPayload.zIndex
+          : undefined;
+      const { zIndex: _stripped, ...propertiesWithoutZIndex } = rawPayload;
+
       // F5/F6: Validate BEFORE live branch — unvalidated properties must never be broadcast.
-      const propertiesResult = PropertiesSchema.safeParse(properties);
+      const propertiesResult = PropertiesSchema.safeParse(propertiesWithoutZIndex);
       if (!propertiesResult.success) {
         socket.emit('error', { message: 'Invalid properties', details: propertiesResult.error.issues });
         return;
@@ -338,14 +363,21 @@ export class ElementEvents {
             ? (elem.properties as Record<string, unknown>)
             : {};
 
+        const updateData: Prisma.ElementUpdateInput = {
+          properties: {
+            ...existing,
+            ...propertiesResult.data,  // F5: use validated data, not raw properties
+          },
+        };
+
+        // Write zIndex to the dedicated DB column when provided (e.g. bring-to-front / send-to-back).
+        if (incomingZIndex !== undefined) {
+          updateData.zIndex = incomingZIndex;
+        }
+
         const updated = await tx.element.update({
           where: { id: elementId },
-          data: {
-            properties: {
-              ...existing,
-              ...propertiesResult.data,  // F5: use validated data, not raw properties
-            },
-          },
+          data: updateData,
         });
 
         return { updatedElement: updated, beforeProperties: before };
@@ -385,6 +417,7 @@ export class ElementEvents {
       io.to(`board:${boardId}`).emit('element:updated', {
         id: elementId,
         properties: updatedElement.properties,
+        zIndex: updatedElement.zIndex,
       });
 
       logger.info('Element updated', { elementId, boardId });
@@ -398,6 +431,15 @@ export class ElementEvents {
     const { boardId, elementId, userId } = data;
 
     try {
+      if (!uuidSchema.safeParse(boardId).success) {
+        socket.emit('error', { message: 'Invalid board ID' });
+        return;
+      }
+      if (!uuidSchema.safeParse(elementId).success) {
+        socket.emit('error', { message: 'Invalid element ID' });
+        return;
+      }
+
       const hasAccess = await this.checkBoardAccess(boardId, userId, 'EDITOR');
       if (!hasAccess) {
         socket.emit('error', { message: 'Permission denied' });
@@ -465,6 +507,11 @@ export class ElementEvents {
       return val`;
 
     try {
+      if (!uuidSchema.safeParse(boardId).success) {
+        socket.emit('error', { message: 'Invalid board ID' });
+        return;
+      }
+
       const hasAccess = await this.checkBoardAccess(boardId, userId, 'EDITOR');
       if (!hasAccess) {
         socket.emit('error', { message: 'Permission denied' });
@@ -522,6 +569,11 @@ export class ElementEvents {
       return val`;
 
     try {
+      if (!uuidSchema.safeParse(boardId).success) {
+        socket.emit('error', { message: 'Invalid board ID' });
+        return;
+      }
+
       const hasAccess = await this.checkBoardAccess(boardId, userId, 'EDITOR');
       if (!hasAccess) {
         socket.emit('error', { message: 'Permission denied' });
@@ -579,6 +631,11 @@ export class ElementEvents {
   async handleClearBoard(socket: Socket, io: Server, data: { boardId: string; userId: string }) {
     const { boardId, userId } = data;
     try {
+      if (!uuidSchema.safeParse(boardId).success) {
+        socket.emit('error', { message: 'Invalid board ID' });
+        return;
+      }
+
       // Clearing the entire board is a destructive operation — restrict to OWNER and ADMIN.
       // Regular EDITORs cannot wipe another user's work.
       const hasAccess = await this.checkBoardAccess(boardId, userId, Role.ADMIN);

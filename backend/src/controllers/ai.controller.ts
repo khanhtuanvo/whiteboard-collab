@@ -4,6 +4,8 @@ import { AiService } from '../services/ai.service';
 
 const aiService = new AiService();
 
+const uuidSchema = z.string().uuid();
+
 const clusterInputSchema = z.array(
     z.object({
         id: z.string(),
@@ -17,6 +19,9 @@ export class AiController {
     async clusterElements(req: Request, res: Response) {
         try {
             const boardId = req.params.id as string;
+            if (!uuidSchema.safeParse(boardId).success) {
+                return res.status(400).json({ error: 'Invalid board ID' });
+            }
             const userId = req.userId!;
             const elements = clusterInputSchema.parse(req.body);
 

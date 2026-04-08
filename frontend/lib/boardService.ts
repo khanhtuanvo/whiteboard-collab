@@ -5,7 +5,17 @@ import { Element } from '@/types/element';
 export const boardService = {
   async getBoards(): Promise<Board[]> {
     const response = await api.get('/api/boards');
-    return response.data;
+    const data = response.data;
+
+    if (Array.isArray(data)) {
+      return data;
+    }
+
+    if (Array.isArray(data?.data)) {
+      return data.data;
+    }
+
+    return [];
   },
 
   async getBoard(id: string): Promise<Board> {

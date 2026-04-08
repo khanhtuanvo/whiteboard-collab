@@ -9,7 +9,7 @@ interface UseHistoryOptions {
   onBeforeUndoRedo?: () => void;
 }
 
-export function useHistory({ boardId: _boardId, emitUndo, emitRedo, onBeforeUndoRedo }: UseHistoryOptions) {
+export function useHistory({ emitUndo, emitRedo, onBeforeUndoRedo }: UseHistoryOptions) {
   // C3: canUndo/canRedo are driven entirely by server-reported stack depths
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);

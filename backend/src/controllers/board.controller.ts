@@ -5,6 +5,8 @@ import { Prisma } from '@prisma/client';
 
 const boardService = new BoardService();
 
+const uuidSchema = z.string().uuid();
+
 const createBoardSchema = z.object({
   title: z.string().min(1).max(255),
   isPublic: z.boolean().optional()
@@ -41,6 +43,9 @@ export class BoardController {
   async getBoard(req: Request, res: Response) {
     try {
       const id = req.params.id as string;
+      if (!uuidSchema.safeParse(id).success) {
+        return res.status(400).json({ error: 'Invalid board ID' });
+      }
       const userId = req.userId!;
       const board = await boardService.getBoard(id, userId);
       res.json(board);
@@ -68,6 +73,9 @@ export class BoardController {
   async updateBoard(req: Request, res: Response) {
     try {
       const id = req.params.id as string;
+      if (!uuidSchema.safeParse(id).success) {
+        return res.status(400).json({ error: 'Invalid board ID' });
+      }
       const userId = req.userId!;
       const data = updateBoardSchema.parse(req.body);
       const prismaData: Prisma.BoardUpdateInput = {
@@ -88,6 +96,9 @@ export class BoardController {
   async getBoardElements(req: Request, res: Response) {
     try {
       const id = req.params.id as string;
+      if (!uuidSchema.safeParse(id).success) {
+        return res.status(400).json({ error: 'Invalid board ID' });
+      }
       const userId = req.userId!;
       const elements = await boardService.getBoardElements(id, userId);
       res.json(elements);
@@ -100,6 +111,9 @@ export class BoardController {
   async addCollaborator(req: Request, res: Response) {
     try {
       const boardId = req.params.id as string;
+      if (!uuidSchema.safeParse(boardId).success) {
+        return res.status(400).json({ error: 'Invalid board ID' });
+      }
       const ownerId = req.userId!;
       const { email, role } = addCollaboratorSchema.parse(req.body);
       const collaborator = await boardService.addCollaborator(boardId, ownerId, email, role);
@@ -116,6 +130,9 @@ export class BoardController {
   async getPublicBoard(req: Request, res: Response) {
     try {
       const id = req.params.id as string;
+      if (!uuidSchema.safeParse(id).success) {
+        return res.status(400).json({ error: 'Invalid board ID' });
+      }
       const board = await boardService.getPublicBoard(id);
       res.json(board);
     } catch (error) {
@@ -127,6 +144,9 @@ export class BoardController {
   async getPublicBoardElements(req: Request, res: Response) {
     try {
       const id = req.params.id as string;
+      if (!uuidSchema.safeParse(id).success) {
+        return res.status(400).json({ error: 'Invalid board ID' });
+      }
       const elements = await boardService.getPublicBoardElements(id);
       res.json(elements);
     } catch (error) {
@@ -138,6 +158,9 @@ export class BoardController {
   async deleteBoard(req: Request, res: Response) {
     try {
       const id = req.params.id as string;
+      if (!uuidSchema.safeParse(id).success) {
+        return res.status(400).json({ error: 'Invalid board ID' });
+      }
       const userId = req.userId!;
       await boardService.deleteBoard(id, userId);
       res.status(204).send();

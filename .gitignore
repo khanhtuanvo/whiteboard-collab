@@ -9,3 +9,6 @@ plan.md
 # Windows Zone Identifier files
 *.pem:Zone.Identifier
 *:Zone.Identifier
+
+dev.sh
+stop.sh

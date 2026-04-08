@@ -756,6 +756,95 @@ describe('F6 — handleUpdateElement: no DB read on live ticks', () => {
 });
 
 // =============================================================================
+// Regression — resize/minimize then undo restores original size
+// =============================================================================
+describe('Regression — update snapshots preserve original dimensions', () => {
+  it('stores pre-resize rectangle dimensions in undo snapshot before minimize update', async () => {
+    grantAccess();
+
+    const originalRectangle = {
+      ...MOCK_ELEMENT,
+      type: 'RECTANGLE' as ElementType,
+      properties: {
+        x: 40,
+        y: 50,
+        width: 240,
+        height: 120,
+        scaleX: 1,
+        scaleY: 1,
+        fill: '#f59e0b',
+      },
+    };
+
+    const minimizedRectangle = {
+      ...MOCK_ELEMENT,
+      type: 'RECTANGLE' as ElementType,
+      properties: {
+        x: 40,
+        y: 50,
+        width: 240,
+        height: 120,
+        scaleX: 0.15,
+        scaleY: 0.2,
+        fill: '#f59e0b',
+      },
+    };
+
+    // Snapshot source before update
+    (prisma.element.findMany as jest.Mock).mockResolvedValue([originalRectangle]);
+
+    // Non-live update precheck read
+    (prisma.element.findUnique as jest.Mock).mockResolvedValue(originalRectangle);
+
+    // Transactional update
+    (prisma.$transaction as jest.Mock).mockImplementation(async (fn: Function) => {
+      const tx = {
+        element: {
+          findUnique: jest.fn().mockResolvedValue(originalRectangle),
+          update: jest.fn().mockResolvedValue(minimizedRectangle),
+        },
+      };
+      return fn(tx);
+    });
+
+    const events = new ElementEvents();
+    const socket = makeSocket();
+    const { to } = makeIo();
+
+    await events.handleUpdateElement(
+      socket as unknown as Socket,
+      { to } as unknown as Server,
+      {
+        boardId: BOARD_ID,
+        elementId: ELEM_ID,
+        userId: USER_ID,
+        properties: {
+          x: 40,
+          y: 50,
+          width: 240,
+          height: 120,
+          scaleX: 0.15,
+          scaleY: 0.2,
+        },
+      }
+    );
+
+    expect(redis.eval).toHaveBeenCalled();
+    const saveSnapshotArgs = (redis.eval as jest.Mock).mock.calls[0];
+    const undoSerialized = saveSnapshotArgs[4] as string;
+    const undoSnapshot = JSON.parse(undoSerialized) as Array<{ properties: Record<string, unknown> }>;
+
+    expect(undoSnapshot).toHaveLength(1);
+    expect(undoSnapshot[0].properties).toMatchObject({
+      width: 240,
+      height: 120,
+      scaleX: 1,
+      scaleY: 1,
+    });
+  });
+});
+
+// =============================================================================
 // handleCreateElement — happy path + auth + validation
 // =============================================================================
 describe('handleCreateElement', () => {

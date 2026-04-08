@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 const PRESET_COLORS = [
   '#000000', '#ffffff', '#ef4444', '#f97316',
@@ -17,6 +17,10 @@ interface ColorPickerProps {
 export default function ColorPicker({ fill, stroke, onChange }: ColorPickerProps) {
   const [fillInput, setFillInput] = useState(fill ?? '');
   const [strokeInput, setStrokeInput] = useState(stroke ?? '');
+
+  // Keep text inputs in sync when the selected element changes
+  useEffect(() => { setFillInput(fill ?? ''); }, [fill]);
+  useEffect(() => { setStrokeInput(stroke ?? ''); }, [stroke]);
 
   const handleFillInput = (val: string) => {
     setFillInput(val);

@@ -10,7 +10,7 @@ interface UseWebSocketOptions {
   userName: string;
   userColor: string;
   onElementCreated: (element: Element) => void;
-  onElementUpdated: (id: string, properties: Record<string, unknown>) => void;
+  onElementUpdated: (id: string, properties: Record<string, unknown>, zIndex?: number) => void;
   onElementDeleted: (id: string) => void;
   onSnapshot: (elements: Element[]) => void;
   onActiveUsers: (users: ActiveUser[]) => void;
@@ -120,8 +120,8 @@ export function useWebSocket({
       onElementCreatedRef.current(deserializeElement(element));
     };
 
-    const handleElementUpdated = (data: { id: string; properties: Record<string, unknown> }) => {
-      onElementUpdatedRef.current(data.id, data.properties);
+    const handleElementUpdated = (data: { id: string; properties: Record<string, unknown>; zIndex?: number }) => {
+      onElementUpdatedRef.current(data.id, data.properties, data.zIndex);
     };
 
     const handleElementDeleted = (data: { id: string }) => {

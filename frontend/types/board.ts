@@ -6,7 +6,7 @@ export interface Board {
   ownerId: string;
   thumbnailUrl?: string;
   isPublic: boolean;
-  settings?: any;
+  settings?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
   userRole?: UserRole;
@@ -21,5 +21,5 @@ export interface CreateBoardInput {
 export interface UpdateBoardInput {
   title?: string;
   isPublic?: boolean;
-  settings?: any;
+  settings?: Record<string, unknown>;
 }

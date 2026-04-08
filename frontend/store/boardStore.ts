@@ -16,7 +16,7 @@ interface BoardState {
   activeUsers: ActiveUser[];
   setElements: (elements: Element[]) => void;
   addElement: (element: Element) => void;
-  updateElement: (id: string, properties: Element['properties']) => void;
+  updateElement: (id: string, properties: Element['properties'], zIndex?: number) => void;
   removeElement: (id: string) => void;
   clearElements: () => void;
   // Upsert a full element from a remote WS event — does NOT trigger canvas re-emission
@@ -37,12 +37,14 @@ export const useBoardStore = create<BoardState>((set) => ({
   addElement: (element) =>
     set((state) => ({ elements: [...state.elements, element] })),
 
-  // Replaces the full properties object (backend always returns merged props)
-  updateElement: (id, properties) =>
+  // Replaces the full properties object (backend always returns merged props).
+  // Optionally updates zIndex when the server echoes a bring-to-front/send-to-back change.
+  updateElement: (id, properties, zIndex) =>
     set((state) => ({
-      elements: state.elements.map((el) =>
-        el.id === id ? { ...el, properties } : el
-      ),
+      elements: state.elements.map((el) => {
+        if (el.id !== id) return el;
+        return zIndex !== undefined ? { ...el, properties, zIndex } : { ...el, properties };
+      }),
     })),
 
   removeElement: (id) =>

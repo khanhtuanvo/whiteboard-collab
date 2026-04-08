@@ -24,7 +24,15 @@ export interface Element {
     stroke?: string;
     strokeWidth?: number;
     fontSize?: number;
-    [key: string]: any;
+    // Line / Arrow endpoints
+    x2?: number;
+    y2?: number;
+    // Transform scale
+    scaleX?: number;
+    scaleY?: number;
+    // Freehand pen path
+    pathData?: string;
+    [key: string]: unknown;
   };
   zIndex: number;
   createdBy: string;
@@ -33,10 +41,11 @@ export interface Element {
 }
 
 /** Converts a raw API/WebSocket JSON response into a typed Element with proper Date instances. */
-export function deserializeElement(raw: any): Element {
+export function deserializeElement(raw: unknown): Element {
+  const r = raw as Record<string, unknown>;
   return {
-    ...raw,
-    createdAt: new Date(raw.createdAt),
-    updatedAt: new Date(raw.updatedAt),
+    ...(r as unknown as Element),
+    createdAt: new Date(r.createdAt as string),
+    updatedAt: new Date(r.updatedAt as string),
   };
 }

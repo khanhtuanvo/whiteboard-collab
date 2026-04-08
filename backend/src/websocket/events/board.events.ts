@@ -35,32 +35,43 @@ export class BoardEvents {
       // Join Socket.io room
       socket.join(`board:${boardId}`);
 
-      // Add user to Redis active users
-      await redis.hset(
+      // Atomically: set user entry, refresh TTL, and read the full user map.
+      // A Lua script runs as a single Redis command — no other client can observe
+      // partial state between HSET and HGETALL, eliminating the race condition
+      // where a concurrent join or leave would see a stale user list.
+      const luaJoinUser = `
+        redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+        redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
+        return redis.call('HGETALL', KEYS[1])
+      `;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rawResult = await (redis as any).eval(
+        luaJoinUser, 1,
         `active:board:${boardId}`,
         userId,
-        JSON.stringify({
-          socketId: socket.id,
-          userId,
-          userName,
-          userColor,
-          cursor: { x: 0, y: 0 },
-          lastSeen: Date.now()
-        })
-      );
+        JSON.stringify({ socketId: socket.id, userId, userName, userColor, cursor: { x: 0, y: 0 }, lastSeen: Date.now() }),
+        '300'
+      ) as string[];
 
-      // Set expiry for cleanup — 5 min is sufficient for presence data
-      await redis.expire(`active:board:${boardId}`, 300);
-
-      // Get full active user list
-      const activeUsers = await redis.hgetall(`active:board:${boardId}`);
-      const users = Object.values(activeUsers).map(u => JSON.parse(u));
+      // HGETALL returns a flat [field, value, field, value, …] array from Lua
+      const activeUsersMap: Record<string, string> = {};
+      for (let i = 0; i < rawResult.length; i += 2) {
+        activeUsersMap[rawResult[i]] = rawResult[i + 1];
+      }
+      const users = Object.values(activeUsersMap).map(u => JSON.parse(u));
 
       // Broadcast full user list to everyone in the room (including the new joiner).
       // Legacy events kept alongside for any clients still listening to them.
       io.to(`board:${boardId}`).emit('room:users', users);
       socket.to(`board:${boardId}`).emit('user:joined', { userId, userName, userColor });
       socket.emit('board:active_users', users);
+
+      // Initialize undo/redo button state for this user after join/reconnect.
+      const [undoDepth, redoDepth] = await Promise.all([
+        redis.llen(`snapshots:${boardId}:${userId}`),
+        redis.llen(`redo:${boardId}:${userId}`),
+      ]);
+      socket.emit('history:state', { undoDepth, redoDepth });
 
       logger.info('User joined board', { userName, boardId });
     } catch (error) {

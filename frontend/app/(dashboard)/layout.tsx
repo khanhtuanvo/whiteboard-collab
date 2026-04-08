@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
@@ -35,8 +36,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   useEffect(() => {
     const stored = localStorage.getItem('cursorColor');
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAvatarColor(stored ?? defaultColor);
-  }, [pathname]);
+  }, [pathname, defaultColor]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -57,9 +59,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           className="rounded-full focus:outline-none shadow-md"
         >
           {user?.avatarUrl ? (
-            <img
+            <Image
               src={user.avatarUrl}
               alt={user.name}
+              width={36}
+              height={36}
+              unoptimized
               className="w-9 h-9 rounded-full object-cover"
             />
           ) : (

@@ -11,6 +11,7 @@ import { Plus, Search, MoreHorizontal, Trash2, Pencil, Copy, Share2, Clock, User
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import Link from "next/link";
+import axios from "axios";
 import { toast } from "sonner";
 
 type Tab = 'mine' | 'shared';
@@ -132,8 +133,8 @@ export default function BoardsPage() {
       toast.success(`Invited ${shareEmail.trim()} as ${shareRole.toLowerCase()}`);
       setShareEmail('');
       setShareDialogId(null);
-    } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? 'Failed to add collaborator');
+    } catch (err: unknown) {
+      toast.error(axios.isAxiosError(err) ? (err.response?.data?.error ?? 'Failed to add collaborator') : 'Failed to add collaborator');
     } finally {
       setSharing(false);
     }

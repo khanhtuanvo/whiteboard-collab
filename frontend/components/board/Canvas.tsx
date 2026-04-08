@@ -1,14 +1,16 @@
 'use client';
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
 import * as fabric from 'fabric';
 import { toast } from 'sonner';
 import { Element, ElementType } from '@/types/element';
+import { buildTransformUpdates, normalizeScale, resolveSyncBaseDimensions } from './canvasTransform';
 
 const HEADER_HEIGHT = 64;
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 5.0;
-const THROTTLE_MS = 33; // ~30fps
+const THROTTLE_MS = 40; // ~25fps, keeps headroom for final commit events
 
 function throttleFn<T extends (...args: any[]) => any>(fn: T, ms: number): T {
   let last = 0;
@@ -61,6 +63,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
   // Drawing state
   const isDrawingRef = useRef(false);
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
+  const previewObjectRef = useRef<fabric.Object | null>(null);
 
   // Pan state
   const isPanningRef = useRef(false);
@@ -102,6 +105,67 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
   useEffect(() => { onToolResetRef.current = onToolReset; }, [onToolReset]);
   useEffect(() => { onGestureEndRef.current = onGestureEnd; }, [onGestureEnd]);
 
+  interface RenderSafeFabricNode {
+    scaleX?: number;
+    scaleY?: number;
+    width?: number;
+    height?: number;
+    dirty?: boolean;
+    _cacheCanvas?: { width: number; height: number };
+    getObjects?: () => fabric.Object[];
+  }
+
+  const hardenFabricObjectForRender = useCallback((obj: fabric.Object) => {
+    const node = obj as unknown as RenderSafeFabricNode;
+
+    obj.set('objectCaching', false);
+
+    const scaleX = normalizeScale(node.scaleX, 1);
+    const scaleY = normalizeScale(node.scaleY, 1);
+    if (node.scaleX !== scaleX) obj.set('scaleX', scaleX);
+    if (node.scaleY !== scaleY) obj.set('scaleY', scaleY);
+
+    if (typeof node.width === 'number' && Number.isFinite(node.width) && node.width <= 0) {
+      obj.set('width', 1);
+    }
+    if (typeof node.height === 'number' && Number.isFinite(node.height) && node.height <= 0) {
+      obj.set('height', 1);
+    }
+
+    const cacheCanvas = node._cacheCanvas;
+    if (cacheCanvas && (cacheCanvas.width <= 0 || cacheCanvas.height <= 0)) {
+      node._cacheCanvas = undefined;
+      node.dirty = true;
+    }
+
+    if (typeof node.getObjects === 'function') {
+      (node.getObjects() as fabric.Object[]).forEach((child: fabric.Object) => {
+        hardenFabricObjectForRender(child);
+      });
+    }
+  }, []);
+
+  const safeRenderCanvas = useCallback((canvas: fabric.Canvas, reason: string) => {
+    canvas.getObjects().forEach((obj: fabric.Object) => hardenFabricObjectForRender(obj));
+
+    try {
+      canvas.renderAll();
+    } catch (err) {
+      // Extra recovery pass for stale internals that still hold invalid cache buffers.
+      canvas.getObjects().forEach((obj: fabric.Object) => {
+        hardenFabricObjectForRender(obj);
+        (obj as unknown as RenderSafeFabricNode).dirty = true;
+      });
+
+      try {
+        canvas.requestRenderAll();
+      } catch {
+        // Keep UI responsive even if Fabric rejects a frame; next sync pass can recover.
+      }
+      console.error(`[Canvas] safeRender recovered from cache-size error (${reason})`, err);
+    }
+  }, [hardenFabricObjectForRender]);
+
   // ─── Create a Fabric object from element data ───────────────────────────────
   const createFabricObject = useCallback((element: Element): fabric.Object | null => {
     const { type, properties } = element;
@@ -111,18 +175,19 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       hasControls: true,
       hasBorders: true,
       selectable: true,
+      objectCaching: false,
     };
 
     switch (type) {
       case ElementType.RECTANGLE: {
-        const rScaleX = properties.scaleX ?? 1;
-        const rScaleY = properties.scaleY ?? 1;
+        const rScaleX = normalizeScale(properties.scaleX, 1);
+        const rScaleY = normalizeScale(properties.scaleY, 1);
         return new fabric.Rect({
           ...base,
           left: properties.x,
           top: properties.y,
-          width: (properties.width ?? 100) / Math.abs(rScaleX),
-          height: (properties.height ?? 100) / Math.abs(rScaleY),
+          width: resolveSyncBaseDimensions({ width: properties.width, currentWidth: 100 }).width,
+          height: resolveSyncBaseDimensions({ height: properties.height, currentHeight: 100 }).height,
           scaleX: rScaleX,
           scaleY: rScaleY,
           fill: properties.fill ?? '#3b82f6',
@@ -137,8 +202,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
           left: properties.x,
           top: properties.y,
           radius: properties.radius ?? 50,
-          scaleX: properties.scaleX ?? 1,
-          scaleY: properties.scaleY ?? 1,
+          scaleX: normalizeScale(properties.scaleX, 1),
+          scaleY: normalizeScale(properties.scaleY, 1),
           fill: properties.fill ?? '#10b981',
           stroke: properties.stroke,
           strokeWidth: properties.strokeWidth ?? 0,
@@ -154,10 +219,16 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         });
 
       case ElementType.STICKY_NOTE: {
-        const snScaleX = properties.scaleX ?? 1;
-        const snScaleY = properties.scaleY ?? 1;
-        const w = (properties.width ?? 200) / Math.abs(snScaleX);
-        const h = (properties.height ?? 200) / Math.abs(snScaleY);
+        const snScaleX = normalizeScale(properties.scaleX, 1);
+        const snScaleY = normalizeScale(properties.scaleY, 1);
+        const dims = resolveSyncBaseDimensions({
+          width: properties.width,
+          height: properties.height,
+          currentWidth: 200,
+          currentHeight: 200,
+        });
+        const w = dims.width;
+        const h = dims.height;
         return new fabric.Group(
           [
             new fabric.Rect({
@@ -166,13 +237,18 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
               fill: properties.fill ?? properties.color ?? '#fef08a',
               stroke: '#ca8a04',
               strokeWidth: 1,
+              objectCaching: false,
             }),
-            new fabric.Textbox(properties.text ?? 'Note', {
+            new fabric.Textbox(properties.text ?? '', {
               fontSize: properties.fontSize ?? 16,
               fill: '#000000',
-              width: w - 20,
+              width: Math.max(20, w - 20),
               top: 10,
               left: 10,
+              objectCaching: false,
+              // Break at any character so long words (or text with no spaces) never
+              // overflow the note boundary horizontally.
+              splitByGrapheme: true,
             }),
           ],
           { ...base, left: properties.x, top: properties.y, scaleX: snScaleX, scaleY: snScaleY }
@@ -182,7 +258,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       case ElementType.LINE: {
         if (properties.pathData) {
           // Freehand pen path — path commands are in local coordinates
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           let parsedPath: any;
           try {
             parsedPath = JSON.parse(properties.pathData);
@@ -195,6 +271,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
             ...base,
             left: properties.x,
             top: properties.y,
+            scaleX: normalizeScale(properties.scaleX, 1),
+            scaleY: normalizeScale(properties.scaleY, 1),
             stroke: properties.stroke ?? '#000000',
             strokeWidth: properties.strokeWidth ?? 3,
             fill: '',
@@ -207,6 +285,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
           ...base,
           left: properties.x,
           top: properties.y,
+          scaleX: normalizeScale(properties.scaleX, 1),
+          scaleY: normalizeScale(properties.scaleY, 1),
           stroke: properties.stroke ?? '#000000',
           strokeWidth: properties.strokeWidth ?? 2,
           fill: '',
@@ -230,6 +310,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
             ...base,
             left: properties.x,
             top: properties.y,
+            scaleX: normalizeScale(properties.scaleX, 1),
+            scaleY: normalizeScale(properties.scaleY, 1),
             stroke: properties.stroke ?? '#000000',
             strokeWidth: properties.strokeWidth ?? 2,
             fill: '',
@@ -259,8 +341,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     const gTop = group.top ?? 0;
     const gScaleX = group.scaleX ?? 1;
     const gScaleY = group.scaleY ?? 1;
-    const gW = (group.width ?? 200) * gScaleX;
-    const gH = (group.height ?? 200) * gScaleY;
+    const gW = Math.max(1, (group.width ?? 200) * gScaleX);
+    const gH = Math.max(1, (group.height ?? 200) * gScaleY);
 
     canvas.remove(group);
 
@@ -274,6 +356,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       strokeWidth: 1,
       selectable: false,
       evented: false,
+      objectCaching: false,
     });
 
     // No data.elementId — prevents the global text:editing:exited handler from firing
@@ -282,7 +365,13 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       top: gTop + 10,
       fontSize: (textObj as any).fontSize ?? 16,
       fill: '#000000',
-      width: gW - 20,
+      // Keep the textbox exactly as wide as the note interior so text wraps before
+      // reaching the note edge regardless of whether the input has spaces or not.
+      width: Math.max(20, gW - 20),
+      objectCaching: false,
+      // Character-level wrapping so long words / no-space input can't overflow
+      // horizontally past the note boundary.
+      splitByGrapheme: true,
     });
 
     canvas.add(bgRect);
@@ -291,8 +380,23 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     standaloneText.enterEditing();
     standaloneText.selectAll();
 
+    // Auto-grow the background rect as the user types long content so text
+    // never visually overflows the sticky note boundary.
+    const onTextChanged = () => {
+      const textH = standaloneText.height ?? 0;
+      const needed = Math.max(gH, textH + 20);
+      if ((bgRect.height ?? gH) !== needed) {
+        bgRect.set({ height: needed });
+        safeRenderCanvas(canvas, 'sticky-text-grow');
+      }
+    };
+    standaloneText.on('changed', onTextChanged);
+
     standaloneText.once('editing:exited', () => {
+      standaloneText.off('changed', onTextChanged);
       const newText = standaloneText.text ?? '';
+      // Capture the final bgRect height BEFORE removing it so we can persist it.
+      const finalBgHeight = bgRect.height ?? gH;
       canvas.remove(standaloneText);
       canvas.remove(bgRect);
       editingStickyIdRef.current = null;
@@ -300,13 +404,19 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       const element = elementsRef.current.find(el => el.id === elementId);
       if (element) {
         onElementUpdateRef.current(elementId, {
-          properties: { ...element.properties, text: newText },
+          properties: {
+            ...element.properties,
+            text: newText,
+            // Persist auto-grown height as unscaled base dimension so it
+            // survives a round-trip through the server and createFabricObject.
+            height: Math.round(finalBgHeight / gScaleY),
+          },
         });
       }
       onGestureEndRef.current?.();
-      canvas.renderAll();
+      safeRenderCanvas(canvas, 'sticky-edit-exit');
     });
-  }, []);
+  }, [safeRenderCanvas]);
 
   // ─── Stable mouse handlers (read from refs, never go stale) ─────────────────
   const handleMouseDown = useCallback((e: fabric.TPointerEventInfo) => {
@@ -347,14 +457,137 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
   }, []);
 
   const handleMouseMove = useCallback((e: fabric.TPointerEventInfo) => {
-    if (!isPanningRef.current || !panStartRef.current) return;
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
-    const me = e.e as MouseEvent;
-    const dx = me.clientX - panStartRef.current.x;
-    const dy = me.clientY - panStartRef.current.y;
-    panStartRef.current = { x: me.clientX, y: me.clientY };
-    canvas.relativePan(new fabric.Point(dx, dy));
+
+    // Panning
+    if (isPanningRef.current && panStartRef.current) {
+      const me = e.e as MouseEvent;
+      const dx = me.clientX - panStartRef.current.x;
+      const dy = me.clientY - panStartRef.current.y;
+      panStartRef.current = { x: me.clientX, y: me.clientY };
+      canvas.relativePan(new fabric.Point(dx, dy));
+      return;
+    }
+
+    // Drawing preview (rubber-band ghost shape)
+    if (!isDrawingRef.current || !drawStartRef.current) return;
+    const tool = selectedToolRef.current;
+    if (tool === 'select' || tool === 'pen') return;
+
+    const pointer = canvas.getScenePoint(e.e);
+    const start = drawStartRef.current;
+    const x = Math.min(start.x, pointer.x);
+    const y = Math.min(start.y, pointer.y);
+    const w = Math.abs(pointer.x - start.x);
+    const h = Math.abs(pointer.y - start.y);
+
+    // Remove previous preview
+    if (previewObjectRef.current) {
+      canvas.remove(previewObjectRef.current);
+      previewObjectRef.current = null;
+    }
+
+    const previewStyle = {
+      selectable: false,
+      evented: false,
+      objectCaching: false,
+      opacity: 0.5,
+      strokeDashArray: [6, 4],
+    };
+
+    let preview: fabric.Object | null = null;
+    switch (tool) {
+      case 'rectangle':
+        preview = new fabric.Rect({
+          ...previewStyle,
+          left: x,
+          top: y,
+          width: Math.max(1, w),
+          height: Math.max(1, h),
+          fill: '#3b82f6',
+          stroke: '#1d4ed8',
+          strokeWidth: 2,
+        });
+        break;
+      case 'circle':
+        preview = new fabric.Circle({
+          ...previewStyle,
+          left: start.x,
+          top: start.y,
+          radius: Math.max(1, Math.max(w, h) / 2),
+          fill: '#10b981',
+          stroke: '#065f46',
+          strokeWidth: 2,
+        });
+        break;
+      case 'line':
+        preview = new fabric.Path(`M 0 0 L ${pointer.x - start.x} ${pointer.y - start.y}`, {
+          ...previewStyle,
+          left: start.x,
+          top: start.y,
+          stroke: '#000000',
+          strokeWidth: 2,
+          fill: '',
+          originX: 'left',
+          originY: 'top',
+        });
+        break;
+      case 'arrow': {
+        const dx = pointer.x - start.x;
+        const dy2 = pointer.y - start.y;
+        const angle = Math.atan2(dy2, dx);
+        const arrowLen = 14;
+        const ax1 = dx - arrowLen * Math.cos(angle - Math.PI / 6);
+        const ay1 = dy2 - arrowLen * Math.sin(angle - Math.PI / 6);
+        const ax2 = dx - arrowLen * Math.cos(angle + Math.PI / 6);
+        const ay2 = dy2 - arrowLen * Math.sin(angle + Math.PI / 6);
+        preview = new fabric.Path(
+          `M 0 0 L ${dx} ${dy2} M ${ax1} ${ay1} L ${dx} ${dy2} L ${ax2} ${ay2}`,
+          {
+            ...previewStyle,
+            left: start.x,
+            top: start.y,
+            stroke: '#000000',
+            strokeWidth: 2,
+            fill: '',
+            originX: 'left',
+            originY: 'top',
+          }
+        );
+        break;
+      }
+      case 'text':
+        preview = new fabric.Rect({
+          ...previewStyle,
+          left: start.x,
+          top: start.y,
+          width: Math.max(1, w),
+          height: Math.max(1, h || 30),
+          fill: 'transparent',
+          stroke: '#6366f1',
+          strokeWidth: 2,
+        });
+        break;
+      case 'sticky_note':
+        preview = new fabric.Rect({
+          ...previewStyle,
+          left: start.x,
+          top: start.y,
+          width: 200,
+          height: 200,
+          fill: '#fef08a',
+          stroke: '#ca8a04',
+          strokeWidth: 2,
+        });
+        break;
+    }
+
+    if (preview) {
+      canvas.add(preview);
+      previewObjectRef.current = preview;
+      canvas.renderAll();
+    }
   }, []);
 
   const handleMouseUp = useCallback((e: fabric.TPointerEventInfo) => {
@@ -365,6 +598,13 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
     }
 
     if (!isDrawingRef.current || !drawStartRef.current) return;
+
+    // Remove the rubber-band preview before committing the real element
+    const canvas = fabricCanvasRef.current;
+    if (canvas && previewObjectRef.current) {
+      canvas.remove(previewObjectRef.current);
+      previewObjectRef.current = null;
+    }
 
     // If a text element is in edit mode, swallow the create event entirely
     const activeObj = fabricCanvasRef.current?.getActiveObject();
@@ -397,7 +637,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         elementData = {
           boardId: boardIdRef.current,
           type: ElementType.RECTANGLE,
-          properties: { x, y, width: w, height: h, fill: '#3b82f6' },
+          properties: { x, y, width: w, height: h, fill: '#3b82f6', scaleX: 1, scaleY: 1 },
           zIndex: 0,
         };
         break;
@@ -406,7 +646,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         elementData = {
           boardId: boardIdRef.current,
           type: ElementType.CIRCLE,
-          properties: { x: start.x, y: start.y, radius: Math.max(w, h) / 2, fill: '#10b981' },
+          properties: { x: start.x, y: start.y, radius: Math.max(w, h) / 2, fill: '#10b981', scaleX: 1, scaleY: 1 },
           zIndex: 0,
         };
         break;
@@ -415,7 +655,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         elementData = {
           boardId: boardIdRef.current,
           type: ElementType.TEXT,
-          properties: { x: start.x, y: start.y, text: 'Double click to edit', fontSize: 20, color: '#000000' },
+          properties: { x: start.x, y: start.y, text: 'Double click to edit', fontSize: 20, color: '#000000', scaleX: 1, scaleY: 1 },
           zIndex: 0,
         };
         break;
@@ -424,7 +664,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         elementData = {
           boardId: boardIdRef.current,
           type: ElementType.STICKY_NOTE,
-          properties: { x: start.x, y: start.y, width: 200, height: 200, text: 'New note', color: '#fef08a' },
+          properties: { x: start.x, y: start.y, width: 200, height: 200, text: 'New note', color: '#fef08a', scaleX: 1, scaleY: 1 },
           zIndex: 0,
         };
         break;
@@ -433,7 +673,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         elementData = {
           boardId: boardIdRef.current,
           type: ElementType.LINE,
-          properties: { x: start.x, y: start.y, x2: pointer.x, y2: pointer.y, stroke: '#000000', strokeWidth: 2 },
+          properties: { x: start.x, y: start.y, x2: pointer.x, y2: pointer.y, stroke: '#000000', strokeWidth: 2, scaleX: 1, scaleY: 1 },
           zIndex: 0,
         };
         break;
@@ -442,7 +682,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         elementData = {
           boardId: boardIdRef.current,
           type: ElementType.ARROW,
-          properties: { x: start.x, y: start.y, x2: pointer.x, y2: pointer.y, stroke: '#000000', strokeWidth: 2 },
+          properties: { x: start.x, y: start.y, x2: pointer.x, y2: pointer.y, stroke: '#000000', strokeWidth: 2, scaleX: 1, scaleY: 1 },
           zIndex: 0,
         };
         break;
@@ -488,10 +728,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       let absLeft: number, absTop: number;
       if (isInGroup) {
         const groupMatrix = (child as any).group.calcTransformMatrix();
-        const pt = fabric.util.transformPoint(
-          new fabric.Point(child.left ?? 0, child.top ?? 0),
-          groupMatrix
-        );
+        const pt = new fabric.Point(child.left ?? 0, child.top ?? 0).transform(groupMatrix);
         absLeft = pt.x;
         absTop = pt.y;
       } else {
@@ -501,21 +738,16 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
 
       // For LINE/ARROW the endpoint (x2/y2) is an absolute canvas coordinate.
       // Shift it by the same delta as the origin so geometry is preserved after a move.
-      const updates = {
-        ...element.properties,
-        x: absLeft,
-        y: absTop,
-        width: child.width!,        // raw base — never pre-multiplied by scale
-        height: child.height!,      // raw base — never pre-multiplied by scale
-        scaleX: child.scaleX ?? 1,
-        scaleY: child.scaleY ?? 1,
+      const updates: Element['properties'] = {
+        ...buildTransformUpdates(element.properties, {
+          absLeft,
+          absTop,
+          width: child.width ?? (element.properties.width ?? 0),
+          height: child.height ?? (element.properties.height ?? 0),
+          scaleX: child.scaleX,
+          scaleY: child.scaleY,
+        }),
       };
-      if (element.properties.x2 !== undefined) {
-        const deltaX = absLeft - (element.properties.x ?? 0);
-        const deltaY = absTop - (element.properties.y ?? 0);
-        updates.x2 = element.properties.x2 + deltaX;
-        updates.y2 = (element.properties.y2 ?? 0) + deltaY;
-      }
 
       onElementUpdateRef.current(elementId, { properties: updates });
     };
@@ -548,28 +780,54 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         width: window.innerWidth,
         height: window.innerHeight - HEADER_HEIGHT,
       });
-      canvas.renderAll();
+      safeRenderCanvas(canvas, 'resize');
     };
     window.addEventListener('resize', handleResize);
 
-    // Throttled live-move emitter (fires while dragging, not just on mouse-up)
-    const emitMoving = throttleFn((e: { target: fabric.Object }) => {
+    const buildTransformProperties = (child: fabric.Object) => {
+      const elementId = (child as any).data?.elementId as string | undefined;
+      if (!elementId) return null;
+      const element = elementsRef.current.find(el => el.id === elementId);
+      if (!element) return null;
+
+      // Standalone objects: left/top are absolute canvas coords (originX: 'left').
+      // Grouped objects: left/top are group-relative — apply the group's transform.
+      const isInGroup = (child as any).group?.type === 'activeSelection';
+      let absLeft: number;
+      let absTop: number;
+      if (isInGroup) {
+        const groupMatrix = (child as any).group.calcTransformMatrix();
+        const pt = new fabric.Point(child.left ?? 0, child.top ?? 0).transform(groupMatrix);
+        absLeft = pt.x;
+        absTop = pt.y;
+      } else {
+        absLeft = child.left ?? 0;
+        absTop = child.top ?? 0;
+      }
+
+      const updates: Element['properties'] = buildTransformUpdates(element.properties, {
+        absLeft,
+        absTop,
+        width: child.width ?? (element.properties.width ?? 0),
+        height: child.height ?? (element.properties.height ?? 0),
+        scaleX: child.scaleX,
+        scaleY: child.scaleY,
+      });
+
+      return { elementId, updates };
+    };
+
+    // Throttled live-transform emitter (fires while dragging/scaling, not just on mouse-up)
+    const emitTransform = throttleFn((e: { target: fabric.Object }) => {
       const obj = e.target;
       if (!obj) return;
 
       const emitOne = (child: fabric.Object) => {
-        const elementId = (child as any).data?.elementId as string | undefined;
-        if (!elementId) return;
-        const element = elementsRef.current.find(el => el.id === elementId);
-        if (!element) return;
-        const t = child.calcTransformMatrix();
-        // Use drag-only callback — broadcasts position for collaboration but does NOT record history
-        onElementDragUpdateRef.current?.(elementId, {
-          properties: {
-            ...element.properties,
-            x: t[4] - child.getScaledWidth() / 2,
-            y: t[5] - child.getScaledHeight() / 2,
-          },
+        const transform = buildTransformProperties(child);
+        if (!transform) return;
+        // Use drag-only callback — broadcasts the current geometry for collaboration but does NOT record history
+        onElementDragUpdateRef.current?.(transform.elementId, {
+          properties: transform.updates,
         });
       };
 
@@ -599,7 +857,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       const elementId = (all[0] as any)?.data?.elementId as string | undefined;
       onSelectionChangeRef.current?.(elementId ?? null);
     };
-    const handleSelectionUpdated = (e: any) => {
+    const handleSelectionUpdated = () => {
       const all = canvas.getActiveObjects();
       if (all.length !== 1) { onSelectionChangeRef.current?.(null); return; }
       const elementId = (all[0] as any)?.data?.elementId as string | undefined;
@@ -618,18 +876,18 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         canvas.forEachObject(o => {
           // Only toggle real elements — leave ephemeral objects (bgRect, standaloneText
           // from sticky-note edit mode) in their explicit non-selectable state.
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           if ((o as any).data?.elementId) o.selectable = false;
         });
         canvas.defaultCursor = 'grab';
-        canvas.renderAll();
+        safeRenderCanvas(canvas, 'space-down');
         return;
       }
 
       // ESC → deselect
       if (e.key === 'Escape') {
         canvas.discardActiveObject();
-        canvas.renderAll();
+        safeRenderCanvas(canvas, 'escape-clear-selection');
         onSelectionChangeRef.current?.(null);
         return;
       }
@@ -651,7 +909,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         if (ids.length === 0) return;
         ids.forEach(id => onElementDeleteRef.current(id));
         canvas.discardActiveObject();
-        canvas.renderAll();
+        safeRenderCanvas(canvas, 'keyboard-delete');
         toast.success(ids.length > 1 ? `${ids.length} elements deleted` : 'Element deleted');
         return;
       }
@@ -696,11 +954,11 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         spaceHeldRef.current = false;
         canvas.selection = selectedToolRef.current === 'select';
         canvas.forEachObject(o => {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           if ((o as any).data?.elementId) o.selectable = true;
         });
         canvas.defaultCursor = selectedToolRef.current === 'select' ? 'default' : 'crosshair';
-        canvas.renderAll();
+        safeRenderCanvas(canvas, 'space-up');
       }
     };
 
@@ -742,7 +1000,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       if (!path || selectedToolRef.current !== 'pen') return;
       // Remove the fabric-managed path — the server round-trip will add it back
       canvas.remove(path);
-      canvas.renderAll();
+      safeRenderCanvas(canvas, 'path-created');
       const bounds = path.getBoundingRect();
       const penOptimisticId = crypto.randomUUID();
       pendingSelectIdRef.current = penOptimisticId;
@@ -767,12 +1025,27 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       onToolResetRef.current?.();
     };
 
+    let scalingInProgress = false;
+    const handleObjectMoving = (e: { target: fabric.Object }) => {
+      if (scalingInProgress) return;
+      emitTransform(e);
+    };
+    const handleObjectScaling = (e: { target: fabric.Object }) => {
+      scalingInProgress = true;
+      emitTransform(e);
+    };
+    const handleObjectModifiedWithReset = (e: fabric.ModifiedEvent) => {
+      scalingInProgress = false;
+      handleObjectModified(e);
+    };
+
     canvas.on('mouse:down', handleMouseDown);
     canvas.on('mouse:move', handleMouseMove);
     canvas.on('mouse:up', handleMouseUp);
     canvas.on('mouse:dblclick', handleDblClick);
-    canvas.on('object:modified', handleObjectModified);
-    canvas.on('object:moving', emitMoving as any);
+    canvas.on('object:modified', handleObjectModifiedWithReset);
+    canvas.on('object:moving', handleObjectMoving as any);
+    canvas.on('object:scaling', handleObjectScaling as any);
     canvas.on('mouse:wheel', handleWheel);
     canvas.on('selection:created', handleSelectionCreated);
     canvas.on('selection:updated', handleSelectionUpdated);
@@ -789,8 +1062,9 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       canvas.off('mouse:move', handleMouseMove);
       canvas.off('mouse:up', handleMouseUp);
       canvas.off('mouse:dblclick', handleDblClick);
-      canvas.off('object:modified', handleObjectModified);
-      canvas.off('object:moving', emitMoving as any);
+      canvas.off('object:modified', handleObjectModifiedWithReset);
+      canvas.off('object:moving', handleObjectMoving as any);
+      canvas.off('object:scaling', handleObjectScaling as any);
       canvas.off('mouse:wheel', handleWheel);
       canvas.off('selection:created', handleSelectionCreated);
       canvas.off('selection:updated', handleSelectionUpdated);
@@ -798,7 +1072,14 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       canvas.off('path:created', handlePathCreated);
       canvas.dispose();
     };
-  }, [handleMouseDown, handleMouseMove, handleMouseUp, handleObjectModified]);
+  }, [
+    handleMouseDown,
+    handleMouseMove,
+    handleMouseUp,
+    handleObjectModified,
+    enterStickyEditMode,
+    safeRenderCanvas,
+  ]);
 
   // ─── Sync tool mode ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -821,8 +1102,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       canvas.forEachObject(obj => { obj.selectable = true; });
     }
     canvas.defaultCursor = isSelect ? 'default' : 'crosshair';
-    canvas.renderAll();
-  }, [selectedTool]);
+    safeRenderCanvas(canvas, 'tool-sync');
+  }, [safeRenderCanvas, selectedTool]);
 
   // ─── Sync elements: diff instead of full clear+redraw ───────────────────────
   useEffect(() => {
@@ -879,6 +1160,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
           }
         }
       } else {
+        // Prevent Fabric from drawing stale/invalid zero-size cache canvases.
+        existing.set('objectCaching', false);
         // Apply style + position updates without recreating the object
         const p = el.properties;
 
@@ -886,27 +1169,56 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
         // not on the Group itself. Both `fill` (from ColorPicker) and `color`
         // (original property name) must be forwarded to that child Rect.
         if (existing.type === 'group') {
-          const innerRect = (existing as fabric.Group)
-            .getObjects()
-            .find(o => o.type === 'rect') as fabric.Rect | undefined;
+          const group = existing as fabric.Group;
+          const innerRect = group.getObjects().find(o => o.type === 'rect') as fabric.Rect | undefined;
+          const innerText = group.getObjects().find(o => o.type === 'textbox') as fabric.Textbox | undefined;
+
           // 1. Style on inner rect first
           const newFill = p.fill ?? p.color;
-          if (innerRect && newFill !== undefined) innerRect.set('fill', newFill);
+          if (innerRect && newFill !== undefined) {
+            innerRect.set('fill', newFill);
+            (innerRect as any).dirty = true;
+          }
+          if (p.stroke !== undefined) innerRect?.set('stroke', p.stroke);
           if (p.strokeWidth !== undefined) innerRect?.set('strokeWidth', p.strokeWidth);
-          // 2. Position
+          (existing as any).dirty = true;
+
+          // 2. Text content — syncs remote edits and prevents the local stale-text
+          //    race condition where the Group is re-added before the WS echo arrives.
+          if (innerText !== undefined && p.text !== undefined) {
+            innerText.set('text', String(p.text));
+            innerText.initDimensions();
+            (innerText as any).dirty = true;
+          }
+
+          // 3. Position
           if (p.x !== undefined) existing.set('left', p.x);
           if (p.y !== undefined) existing.set('top', p.y);
-          // 3. Scale — must be applied BEFORE dimensions so the division below uses the new scale
-          if (p.scaleX !== undefined) existing.set('scaleX', p.scaleX);
-          if (p.scaleY !== undefined) existing.set('scaleY', p.scaleY);
-          // 4. Base dimensions (divided by the now-current scale)
-          if (p.width !== undefined) {
-            (existing as any).set('width', p.width / Math.abs(p.scaleX ?? 1));
+          // 4. Scale — must be applied BEFORE dimensions so the division below uses the new scale
+          // Always apply scale, defaulting to 1 when absent (e.g. undo restores pre-resize state
+          // that was created before scaleX/scaleY were persisted — missing = reset to default 1).
+          existing.set('scaleX', normalizeScale(p.scaleX ?? 1, 1));
+          existing.set('scaleY', normalizeScale(p.scaleY ?? 1, 1));
+          // 5. Base dimensions: resize both the inner Rect and the Group wrapper
+          const nextDims = resolveSyncBaseDimensions({
+            width: p.width,
+            height: p.height,
+            currentWidth: existing.width,
+            currentHeight: existing.height,
+          });
+          if (innerRect) {
+            innerRect.set({ width: nextDims.width, height: nextDims.height });
           }
-          if (p.height !== undefined) {
-            (existing as any).set('height', p.height / Math.abs(p.scaleY ?? 1));
+          if (innerText) {
+            innerText.set({
+              width: Math.max(20, nextDims.width - 20),
+              splitByGrapheme: true,
+            });
+            innerText.initDimensions();
           }
-          // 5. Always last
+          (existing as any).set('width', nextDims.width);
+          (existing as any).set('height', nextDims.height);
+          // 6. Always last
           existing.setCoords();
         } else {
           // 1. Style
@@ -920,16 +1232,66 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
           if (p.x !== undefined) existing.set('left', p.x);
           if (p.y !== undefined) existing.set('top', p.y);
           // 3. Scale — must be applied BEFORE dimensions
-          if (p.scaleX !== undefined) existing.set('scaleX', p.scaleX);
-          if (p.scaleY !== undefined) existing.set('scaleY', p.scaleY);
-          // 4. Base dimensions for rects (divided by the now-current scale)
+          // Always apply scale, defaulting to 1 when absent (undo may restore a state that
+          // predates explicit scaleX/scaleY persistence — missing = reset to default 1).
+          existing.set('scaleX', normalizeScale(p.scaleX ?? 1, 1));
+          existing.set('scaleY', normalizeScale(p.scaleY ?? 1, 1));
+
+          // Keep line/arrow path geometry aligned with endpoint updates.
+          if (existing.type === 'path' && (el.type === ElementType.LINE || el.type === ElementType.ARROW)) {
+            try {
+              let nextPath: fabric.Path | null = null;
+
+              if (typeof p.pathData === 'string') {
+                 
+                const parsedPath = JSON.parse(p.pathData) as any;
+                nextPath = new fabric.Path(parsedPath as string);
+              } else {
+                const x = p.x ?? 0;
+                const y = p.y ?? 0;
+                const x2 = p.x2 ?? (x + 100);
+                const y2 = p.y2 ?? y;
+                const dx = x2 - x;
+                const dy = y2 - y;
+
+                if (el.type === ElementType.ARROW) {
+                  const angle = Math.atan2(dy, dx);
+                  const arrowLen = 14;
+                  const ax1 = dx - arrowLen * Math.cos(angle - Math.PI / 6);
+                  const ay1 = dy - arrowLen * Math.sin(angle - Math.PI / 6);
+                  const ax2 = dx - arrowLen * Math.cos(angle + Math.PI / 6);
+                  const ay2 = dy - arrowLen * Math.sin(angle + Math.PI / 6);
+                  nextPath = new fabric.Path(
+                    `M 0 0 L ${dx} ${dy} M ${ax1} ${ay1} L ${dx} ${dy} L ${ax2} ${ay2}`
+                  );
+                } else {
+                  nextPath = new fabric.Path(`M 0 0 L ${dx} ${dy}`);
+                }
+              }
+
+              if (nextPath) {
+                (existing as fabric.Path).set({
+                  path: nextPath.path,
+                  width: nextPath.width,
+                  height: nextPath.height,
+                  pathOffset: nextPath.pathOffset,
+                });
+              }
+            } catch {
+              // Ignore malformed path data and keep the previous geometry.
+            }
+          }
+
+          // 4. Base dimensions for rects (stored as raw, unscaled dimensions)
           if (existing.type === 'rect') {
-            if (p.width !== undefined) {
-              (existing as any).set('width', p.width / Math.abs(p.scaleX ?? 1));
-            }
-            if (p.height !== undefined) {
-              (existing as any).set('height', p.height / Math.abs(p.scaleY ?? 1));
-            }
+            const nextDims = resolveSyncBaseDimensions({
+              width: p.width,
+              height: p.height,
+              currentWidth: (existing as any).width,
+              currentHeight: (existing as any).height,
+            });
+            (existing as any).set('width', nextDims.width);
+            (existing as any).set('height', nextDims.height);
           }
           // 5. Always last
           existing.setCoords();
@@ -937,8 +1299,18 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       }
     });
 
-    canvas.renderAll();
-  }, [elements, createFabricObject, enterStickyEditMode]);
+    // Reorder Fabric objects to match zIndex. canvas.moveTo(obj, index) places the
+    // object at the given position in the internal objects array (lower = rendered first).
+    // Only elements with a data.elementId are considered; ephemeral objects (sticky
+    // edit bgRect / standaloneText) sit outside this set and are left where they are.
+    const sorted = [...elements].sort((a, b) => a.zIndex - b.zIndex);
+    sorted.forEach((el, targetIndex) => {
+      const obj = canvas.getObjects().find(o => (o as any).data?.elementId === el.id);
+      if (obj) canvas.moveObjectTo(obj, targetIndex);
+    });
+
+    safeRenderCanvas(canvas, 'elements-sync');
+  }, [elements, createFabricObject, enterStickyEditMode, safeRenderCanvas]);
 
   useImperativeHandle(ref, () => ({
     exportImage() {
@@ -974,7 +1346,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       if (ids.length === 0) return;
       ids.forEach(id => onElementDeleteRef.current(id));
       canvas.discardActiveObject();
-      canvas.renderAll();
+      safeRenderCanvas(canvas, 'imperative-delete-selected');
     },
     clearSelection() {
       const canvas = fabricCanvasRef.current;
@@ -992,9 +1364,9 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({
       // Clearing it here races with the elements sync effect and can cause the Group to be
       // re-added while bgRect/standaloneText are still present on the canvas.
       canvas.discardActiveObject();
-      canvas.renderAll();
+      safeRenderCanvas(canvas, 'imperative-clear-selection');
     },
-  }));
+  }), [safeRenderCanvas]);
 
   return (
     <div className="relative w-full h-full">

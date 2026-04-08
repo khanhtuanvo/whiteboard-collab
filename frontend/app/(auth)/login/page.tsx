@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import axios from 'axios';
 import api from '@/lib/api';
 import { useUserStore } from '@/store/userStore';
 
@@ -29,8 +30,8 @@ export default function LoginPage() {
 
       setUser(user);
       router.push('/boards');
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Login failed');
+    } catch (err: unknown) {
+      setError(axios.isAxiosError(err) ? (err.response?.data?.error ?? 'Login failed') : 'Login failed');
     } finally {
       setLoading(false);
     }
@@ -71,7 +72,7 @@ export default function LoginPage() {
             </Button>
           </form>
           <p className="mt-4 text-sm text-center text-gray-600">
-            Don't have an account?{' '}
+            Don&apos;t have an account?{' '}
             <Link href="/register" className="text-blue-600 hover:underline">
               Register
             </Link>
