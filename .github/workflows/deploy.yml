@@ -1,0 +1,111 @@
+name: Deploy to AWS
+
+on:
+  workflow_run:
+    workflows: ["CI pipeline"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install Docker on EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            # Install Docker if not present
+            if ! command -v docker &> /dev/null; then
+              echo "Installing Docker..."
+              sudo apt-get update
+              sudo apt-get install -y ca-certificates curl gnupg lsb-release
+              sudo install -m 0755 -d /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              sudo apt-get update
+              sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+              sudo usermod -aG docker $USER
+            fi
+            docker compose version
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 60s
+          command_timeout: 45m
+          script: |
+            set -e
+
+            # ── Bootstrap: clone repo if this is the first deploy ──────────
+            if [ ! -d "$HOME/whiteboard-collab/.git" ]; then
+              echo "First deploy — cloning repository..."
+              git clone https://github.com/${{ github.repository }}.git "$HOME/whiteboard-collab"
+            fi
+
+            cd "$HOME/whiteboard-collab"
+
+            # ── Save current commit for rollback ────────────────────────────
+            PREV_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "")
+
+            # ── Pull latest code ────────────────────────────────────────────
+            git fetch --prune
+            git reset --hard origin/main
+
+            # ── Fix Node 24 OpenSSL compatibility ───────────────────────────
+            # Node 24 uses OpenSSL 3 which drops legacy MD4/MD5 providers.
+            # Setting this env var re-enables them so webpack/older tooling works.
+            export NODE_OPTIONS=--openssl-legacy-provider
+
+            # ── Build images ─────────────────────────────────────────────────
+            # Pass NODE_OPTIONS into Docker build so it applies inside the build stage too
+            docker compose build \
+              --build-arg NODE_OPTIONS=--openssl-legacy-provider
+
+            # ── Database migrations ──────────────────────────────────────────
+            docker compose run --rm \
+              -e NODE_OPTIONS=--openssl-legacy-provider \
+              backend npx prisma migrate deploy
+
+            # ── Swap containers ──────────────────────────────────────────────
+            docker compose up --detach --remove-orphans
+
+            # ── Health check (60s, 12 × 5s) ─────────────────────────────────
+            echo "Waiting for backend to be healthy..."
+            HEALTHY=false
+            for i in $(seq 1 12); do
+              if docker compose exec -T backend wget -qO- http://localhost:4000/health > /dev/null 2>&1; then
+                echo "Backend healthy after $((i * 5))s — deployment complete"
+                HEALTHY=true
+                break
+              fi
+              echo "  attempt $i/12..."
+              sleep 5
+            done
+
+            # ── Rollback if unhealthy ────────────────────────────────────────
+            if [ "$HEALTHY" = "false" ]; then
+              echo "Health check failed — rolling back to $PREV_COMMIT"
+              if [ -n "$PREV_COMMIT" ]; then
+                git reset --hard "$PREV_COMMIT"
+                docker compose build --build-arg NODE_OPTIONS=--openssl-legacy-provider
+                docker compose up --detach --remove-orphans
+              else
+                echo "No previous commit to roll back to — manual intervention required"
+              fi
+              exit 1
+            fi
+
+            # ── Prune old images ─────────────────────────────────────────────
+            docker image prune -f --filter "until=24h"

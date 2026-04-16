@@ -1,0 +1,26 @@
+# Build stage — install all deps (including devDeps for prisma CLI + tsc)
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+# Generate Prisma Client from schema (required before tsc compilation)
+RUN npx prisma generate
+RUN npm run build
+
+# Runtime stage — lean image with only what's needed to run
+FROM node:20-alpine
+WORKDIR /app
+
+# Node 24 OpenSSL compatibility (passed in from docker compose build --build-arg)
+ARG NODE_OPTIONS=--openssl-legacy-provider
+ENV NODE_OPTIONS=$NODE_OPTIONS
+
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/package.json ./package.json
+RUN addgroup -g 1001 appuser && adduser -D -u 1001 -G appuser appuser
+USER appuser
+EXPOSE 4000
+CMD ["node", "dist/server.js"]
