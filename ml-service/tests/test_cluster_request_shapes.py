@@ -7,9 +7,9 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-os.environ.setdefault('ML_SERVICE_KEY', 'test-key')
-os.environ.setdefault('CANVAS_WIDTH', '2000')
-os.environ.setdefault('CANVAS_HEIGHT', '1500')
+os.environ['ML_SERVICE_KEY'] = 'test-key'
+os.environ['CANVAS_WIDTH'] = '2000'
+os.environ['CANVAS_HEIGHT'] = '1500'
 
 
 def _make_embeddings(texts: list[str]) -> np.ndarray:

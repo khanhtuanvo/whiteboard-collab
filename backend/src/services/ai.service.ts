@@ -5,8 +5,11 @@ import prisma from '../config/database';
 import logger from '../config/logger';
 import { Role } from '@prisma/client';
 
-const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://ml-service:5000';
 const CACHE_TTL = 3600; // 1 hour
+
+function getMlServiceUrl(): string {
+    return process.env.ML_SERVICE_URL || 'http://ml-service:5000';
+}
 
 export interface StickyNoteInput {
     id: string;
@@ -68,7 +71,7 @@ async function callMlService(elements: StickyNoteInput[], options?: ClusterOptio
 
     let response: Response;
     try {
-        response = await fetch(`${ML_SERVICE_URL}/cluster`, {
+        response = await fetch(`${getMlServiceUrl()}/cluster`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
