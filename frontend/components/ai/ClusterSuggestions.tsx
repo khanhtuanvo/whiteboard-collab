@@ -15,6 +15,11 @@ interface ClusterResult {
   suggestedY: number;
 }
 
+interface ClusterApiResponse {
+  results: ClusterResult[];
+  degraded: boolean;
+}
+
 type LayoutMode = 'preserve' | 'aggressive';
 
 interface ClusterSuggestionsProps {
@@ -51,11 +56,19 @@ export default function ClusterSuggestions({ boardId, elements, onApplySuggestio
         ? { layoutMode, noteWidth: Math.round(avgWidth), noteHeight: Math.round(avgHeight) }
         : { layoutMode, alpha: 1, maxDisplacement: 2000, noteWidth: Math.round(avgWidth), noteHeight: Math.round(avgHeight) };
 
-      const { data } = await api.post<ClusterResult[]>(`/api/boards/${boardId}/ai/cluster`, {
+      const { data } = await api.post<ClusterResult[] | ClusterApiResponse>(`/api/boards/${boardId}/ai/cluster`, {
         notes,
         options,
       });
-      setSuggestions(data);
+
+      const normalized = Array.isArray(data)
+        ? { results: data, degraded: false }
+        : data;
+
+      setSuggestions(normalized.results);
+      if (normalized.degraded) {
+        toast.warning('AI service is degraded. Suggestions may keep original note positions.');
+      }
     } catch (err: unknown) {
       toast.error(axios.isAxiosError(err) ? (err.response?.data?.error ?? 'Failed to get cluster suggestions') : 'Failed to get cluster suggestions');
     } finally {

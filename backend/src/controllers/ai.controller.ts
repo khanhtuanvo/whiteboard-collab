@@ -28,6 +28,7 @@ const clusterRequestSchema = z.union([
     z.object({
         notes: z.array(clusterElementSchema),
         options: clusterOptionsSchema,
+        k: z.number().int().min(2).max(50).optional(),
     }),
 ]);
 
@@ -42,13 +43,14 @@ export class AiController {
             const payload = clusterRequestSchema.parse(req.body);
             const elements = Array.isArray(payload) ? payload : payload.notes;
             const options = Array.isArray(payload) ? undefined : payload.options;
+            const k = Array.isArray(payload) ? undefined : payload.k;
 
             if (elements.length < 3) {
                 return res.status(400).json({ error: 'Minimum 3 sticky notes required' });
             }
 
-            const results = await aiService.clusterElements(boardId, userId, elements, options);
-            res.json(results);
+            const result = await aiService.clusterElements(boardId, userId, elements, options, k);
+            res.json(result);
         } catch (error) {
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ error: error.issues });

@@ -5,11 +5,9 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
 
 from app.routers import clustering
-from app.routers.clustering import clustering_service, limiter
+from app.routers.clustering import clustering_service
 
 load_dotenv()
 
@@ -47,9 +45,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Whiteboard ML Service", lifespan=lifespan)
-
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(clustering.router)
 

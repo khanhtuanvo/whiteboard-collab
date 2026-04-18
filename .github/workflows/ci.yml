@@ -7,7 +7,31 @@ on:
     branches: [main]
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      ml-service: ${{ steps.filter.outputs.ml-service }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - '.github/workflows/ci.yml'
+            frontend:
+              - 'frontend/**'
+              - '.github/workflows/ci.yml'
+            ml-service:
+              - 'ml-service/**'
+              - '.github/workflows/ci.yml'
+
   backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     services:
       mysql:
@@ -22,29 +46,96 @@ jobs:
     env:
       DATABASE_URL: mysql://test:test@localhost:3306/test_db
       JWT_SECRET: ci-test-secret
+      ML_SERVICE_KEY: ci-test-ml-key
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: '24'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: backend/package-lock.json
-      - run: cd backend && npm ci
-      - run: cd backend && npx prisma generate
-      - run: cd backend && npx prisma migrate deploy
-      - run: cd backend && npx tsc --noEmit
-      - run: cd backend && npx eslint 'src/**/*.ts' --max-warnings 0
-      - run: cd backend && npx jest --forceExit
+      - name: Install dependencies
+        run: npm ci
+        working-directory: backend
+      - name: Prisma generate
+        run: npx prisma generate
+        working-directory: backend
+      - name: Prisma migrate deploy
+        run: npx prisma migrate deploy
+        working-directory: backend
+      - name: Type check
+        run: npx tsc --noEmit
+        working-directory: backend
+      - name: Lint
+        run: npx eslint 'src/**/*.ts' --max-warnings 0
+        working-directory: backend
+      - name: Test
+        run: npm test -- --runInBand
+        working-directory: backend
 
   frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: '24'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
-      - run: cd frontend && npm ci
-      - run: cd frontend && npx tsc --noEmit
-      - run: cd frontend && npm run build
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+      - name: Type check
+        run: npx tsc --noEmit
+        working-directory: frontend
+      - name: Test
+        run: npm test
+        working-directory: frontend
+      - name: Build
+        run: npm run build
+        working-directory: frontend
+
+  ml-service:
+    needs: changes
+    if: needs.changes.outputs['ml-service'] == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: |
+            ml-service/requirements.txt
+            ml-service/requirements-dev.txt
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements-dev.txt
+        working-directory: ml-service
+      - name: Run tests
+        env:
+          ML_SERVICE_KEY: ci-test-key
+          CANVAS_WIDTH: '2000'
+          CANVAS_HEIGHT: '1500'
+        run: python -m pytest -q tests/test_clustering.py tests/test_cluster_request_shapes.py
+        working-directory: ml-service
+
+  summary:
+    needs: [changes, backend, frontend, ml-service]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report path filter results
+        run: |
+          echo "## CI Path Filter Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- backend changed: ${{ needs.changes.outputs.backend }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- frontend changed: ${{ needs.changes.outputs.frontend }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ml-service changed: ${{ needs.changes.outputs['ml-service'] }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Job Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- backend: ${{ needs.backend.result }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- frontend: ${{ needs.frontend.result }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ml-service: ${{ needs['ml-service'].result }}" >> "$GITHUB_STEP_SUMMARY"

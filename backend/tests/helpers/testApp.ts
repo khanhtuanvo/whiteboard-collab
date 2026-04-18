@@ -11,6 +11,7 @@ import cookieParser from 'cookie-parser';
 import { AuthController } from '../../src/controllers/auth.controller';
 import { authMiddleware } from '../../src/middleware/auth.middleware';
 import { BoardController } from '../../src/controllers/board.controller';
+import { AiController } from '../../src/controllers/ai.controller';
 
 export function createTestApp() {
   const app = express();
@@ -21,6 +22,7 @@ export function createTestApp() {
 
   const authController = new AuthController();
   const boardController = new BoardController();
+  const aiController = new AiController();
 
   // Auth
   app.post('/api/auth/register', (req, res) => authController.register(req, res));
@@ -39,6 +41,9 @@ export function createTestApp() {
   app.post('/api/boards', authMiddleware, (req, res) => boardController.createBoard(req, res));
   app.patch('/api/boards/:id', authMiddleware, (req, res) => boardController.updateBoard(req, res));
   app.delete('/api/boards/:id', authMiddleware, (req, res) => boardController.deleteBoard(req, res));
+
+  // AI
+  app.post('/api/boards/:id/ai/cluster', authMiddleware, (req, res) => aiController.clusterElements(req, res));
 
   return app;
 }

@@ -8,6 +8,7 @@ import ClusterSuggestions from './ClusterSuggestions';
 import { ElementType } from '@/types/element';
 
 const apiPost = vi.fn();
+const toastWarning = vi.fn();
 
 vi.mock('@/lib/api', () => ({
   default: {
@@ -19,6 +20,7 @@ vi.mock('sonner', () => ({
   toast: {
     success: vi.fn(),
     error: vi.fn(),
+    warning: (...args: unknown[]) => toastWarning(...args),
   },
 }));
 
@@ -43,6 +45,7 @@ const baseElements = [
 describe('ClusterSuggestions mode payload', () => {
   beforeEach(() => {
     apiPost.mockReset();
+    toastWarning.mockReset();
     apiPost.mockResolvedValue({ data: [] });
   });
 
@@ -122,6 +125,48 @@ describe('ClusterSuggestions mode payload', () => {
     expect(payload.options.maxDisplacement).toBeUndefined();
     expect(payload.options.noteWidth).toBe(200);
     expect(payload.options.noteHeight).toBe(200);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('shows warning toast when backend returns degraded response', async () => {
+    apiPost.mockResolvedValue({
+      data: {
+        results: [
+          { id: 'n1', cluster: 0, suggestedX: 12, suggestedY: 22 },
+          { id: 'n2', cluster: 0, suggestedX: 34, suggestedY: 44 },
+          { id: 'n3', cluster: 1, suggestedX: 56, suggestedY: 66 },
+        ],
+        degraded: true,
+      },
+    });
+
+    const container = document.createElement('div');
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <ClusterSuggestions
+          boardId="board-1"
+          elements={baseElements}
+          onApplySuggestions={() => {}}
+        />
+      );
+    });
+
+    const actionButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Auto-Organize')
+    );
+
+    expect(actionButton).toBeTruthy();
+
+    await act(async () => {
+      actionButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(toastWarning).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       root.unmount();

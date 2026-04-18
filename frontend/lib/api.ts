@@ -1,6 +1,11 @@
 import axios from 'axios';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000/api";
+function normalizeApiBase(url: string): string {
+    const trimmed = url.replace(/\/+$/, '');
+    return trimmed.endsWith('/api') ? trimmed.slice(0, -4) : trimmed;
+}
+
+const API_URL = normalizeApiBase(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000');
 
 const api = axios.create({
     baseURL: API_URL,

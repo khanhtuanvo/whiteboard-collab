@@ -8,8 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from pydantic import TypeAdapter
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from app.services.clustering_service import ClusteringService
 
@@ -17,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 security = HTTPBearer()
-limiter = Limiter(key_func=get_remote_address)
 
 # Singleton — model is loaded once at startup
 clustering_service = ClusteringService()
@@ -72,7 +69,6 @@ async def _parse_cluster_request(request: Request) -> Tuple[List[StickyNoteInput
 
 
 @router.post("/cluster", response_model=List[ClusterResult])
-@limiter.limit("20/minute")
 async def cluster_notes(
     request: Request,
     _: None = Depends(verify_token),

@@ -34,7 +34,12 @@ export interface ClusterResult {
     suggestedY: number;
 }
 
-function hashElements(elements: StickyNoteInput[], options?: ClusterOptions): string {
+export interface ClusterResponse {
+    results: ClusterResult[];
+    degraded: boolean;
+}
+
+function hashElements(elements: StickyNoteInput[], options?: ClusterOptions, k?: number): string {
     const sorted = [...elements].sort((a, b) => a.id.localeCompare(b.id));
     const content = sorted
         .map((e) => {
@@ -46,6 +51,7 @@ function hashElements(elements: StickyNoteInput[], options?: ClusterOptions): st
         })
         .join('|');
     const optionsFingerprint = JSON.stringify({
+        k: k ?? null,
         layoutMode: options?.layoutMode ?? 'preserve',
         alpha: options?.alpha ?? 0.35,
         maxDisplacement: options?.maxDisplacement ?? 400,
@@ -56,7 +62,7 @@ function hashElements(elements: StickyNoteInput[], options?: ClusterOptions): st
     return crypto.createHash('md5').update(`${content}::${optionsFingerprint}`).digest('hex');
 }
 
-async function callMlService(elements: StickyNoteInput[], options?: ClusterOptions): Promise<ClusterResult[]> {
+async function callMlService(elements: StickyNoteInput[], options?: ClusterOptions, k?: number): Promise<ClusterResult[]> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30_000);
 
@@ -68,7 +74,7 @@ async function callMlService(elements: StickyNoteInput[], options?: ClusterOptio
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${process.env.ML_SERVICE_KEY}`,
             },
-            body: JSON.stringify({ notes: elements, options }),
+            body: JSON.stringify({ notes: elements, options, ...(k !== undefined ? { k } : {}) }),
             signal: controller.signal,
         });
     } catch (err: unknown) {
@@ -105,8 +111,9 @@ export class AiService {
         boardId: string,
         userId: string,
         elements: StickyNoteInput[],
-        options?: ClusterOptions
-    ): Promise<ClusterResult[]> {
+        options?: ClusterOptions,
+        k?: number,
+    ): Promise<ClusterResponse> {
         const board = await prisma.board.findFirst({
             where: {
                 id: boardId,
@@ -128,30 +135,42 @@ export class AiService {
             throw new Error('Board not found or insufficient permissions');
         }
 
-        const hash = hashElements(elements, options);
+        const hash = hashElements(elements, options, k);
         const cacheKey = `ai:cluster:${boardId}:${hash}`;
 
         const cached = await redis.get(cacheKey);
         if (cached) {
-            return JSON.parse(cached) as ClusterResult[];
+            try {
+                return { results: JSON.parse(cached) as ClusterResult[], degraded: false };
+            } catch (error) {
+                logger.warn('Invalid cached AI cluster payload; evicting cache entry', {
+                    boardId,
+                    cacheKey,
+                    error,
+                });
+                await (redis as unknown as { del: (key: string) => Promise<number> }).del(cacheKey).catch(() => undefined);
+            }
         }
 
         try {
-            const results = await mlBreaker.fire(elements, options);
+            const results = await mlBreaker.fire(elements, options, k);
             await redis.setex(cacheKey, CACHE_TTL, JSON.stringify(results));
-            return results;
+            return { results, degraded: false };
         } catch (error) {
             logger.warn('ML clustering failed; returning original positions', {
                 boardId,
                 userId,
                 error,
             });
-            return elements.map((element) => ({
+            return {
+                results: elements.map((element) => ({
                 id: element.id,
                 cluster: 0,
                 suggestedX: element.x,
                 suggestedY: element.y,
-            }));
+                })),
+                degraded: true,
+            };
         }
     }
 }
