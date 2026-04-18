@@ -15,12 +15,43 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
+      - name: Preflight SSH reachability
+        shell: bash
+        env:
+          TARGET_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TARGET_HOST:-}" ]; then
+            echo "EC2_HOST secret is empty or missing"
+            exit 1
+          fi
+
+          echo "Checking TCP reachability to ${TARGET_HOST}:22 ..."
+          reachable=false
+          for i in $(seq 1 12); do
+            if timeout 3 bash -c "</dev/tcp/${TARGET_HOST}/22" 2>/dev/null; then
+              echo "SSH port reachable on attempt ${i}/12"
+              reachable=true
+              break
+            fi
+            echo "Attempt ${i}/12 failed; retrying in 5s"
+            sleep 5
+          done
+
+          if [ "${reachable}" != "true" ]; then
+            echo "Unable to reach ${TARGET_HOST}:22 from GitHub runner."
+            echo "Check EC2 public IP/DNS, security group inbound TCP/22, NACL, route table, and SSH daemon status."
+            exit 1
+          fi
+
       - name: Install Docker on EC2
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 120s
           script: |
             set -e
             # Install Docker if not present
