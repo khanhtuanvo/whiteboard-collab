@@ -99,10 +99,18 @@ jobs:
             # Setting this env var re-enables them so webpack/older tooling works.
             export NODE_OPTIONS=--openssl-legacy-provider
 
-            # ── Build images ─────────────────────────────────────────────────
-            # Pass NODE_OPTIONS into Docker build so it applies inside the build stage too
+            # ── Build images one at a time to avoid EC2 disk exhaustion ───────
+            # The repo's images are large enough that parallel compose builds can
+            # temporarily overflow the instance disk. Pruning old builder cache
+            # between services keeps peak usage lower.
+            docker builder prune -af --filter "until=24h" || true
             docker compose build \
-              --build-arg NODE_OPTIONS=--openssl-legacy-provider
+              --build-arg NODE_OPTIONS=--openssl-legacy-provider \
+              backend
+            docker builder prune -af --filter "until=24h" || true
+            docker compose build frontend
+            docker builder prune -af --filter "until=24h" || true
+            docker compose build ml-service
 
             # ── Database migrations ──────────────────────────────────────────
             docker compose run --rm \
@@ -130,7 +138,14 @@ jobs:
               echo "Health check failed — rolling back to $PREV_COMMIT"
               if [ -n "$PREV_COMMIT" ]; then
                 git reset --hard "$PREV_COMMIT"
-                docker compose build --build-arg NODE_OPTIONS=--openssl-legacy-provider
+                docker builder prune -af --filter "until=24h" || true
+                docker compose build \
+                  --build-arg NODE_OPTIONS=--openssl-legacy-provider \
+                  backend
+                docker builder prune -af --filter "until=24h" || true
+                docker compose build frontend
+                docker builder prune -af --filter "until=24h" || true
+                docker compose build ml-service
                 docker compose up --detach --remove-orphans
               else
                 echo "No previous commit to roll back to — manual intervention required"
