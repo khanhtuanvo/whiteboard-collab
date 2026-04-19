@@ -82,10 +82,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
 
   ml-service:
     build:
