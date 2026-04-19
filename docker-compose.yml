@@ -48,6 +48,8 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_REGION: ${AWS_REGION:-}
       S3_BUCKET: ${S3_BUCKET:-}
+      ML_ENABLED: ${ML_ENABLED:-true}
+      ML_TIMEOUT_MS: ${ML_TIMEOUT_MS:-8000}
       ML_SERVICE_URL: http://ml-service:5000
       ML_SERVICE_KEY: ${ML_SERVICE_KEY}
     depends_on:

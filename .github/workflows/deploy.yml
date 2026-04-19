@@ -93,6 +93,19 @@ jobs:
             # ── Pull latest code ────────────────────────────────────────────
             git fetch --prune
             git reset --hard origin/main
+            HEAD_COMMIT=$(git rev-parse HEAD)
+
+            # ── Decide whether ml-service must be rebuilt ───────────────────
+            BUILD_ML=true
+            if [ -n "$PREV_COMMIT" ]; then
+              if git diff --name-only "$PREV_COMMIT" "$HEAD_COMMIT" | grep -Eq '^(ml-service/|docker-compose.yml|docker/Dockerfile\.backend|docker/Dockerfile\.frontend|\.github/workflows/deploy\.yml)$'; then
+                echo "ML-related files changed — ml-service image will be rebuilt"
+                BUILD_ML=true
+              else
+                echo "No ML-related changes detected — skipping ml-service rebuild"
+                BUILD_ML=false
+              fi
+            fi
 
             # ── Fix Node 24 OpenSSL compatibility ───────────────────────────
             # Node 24 uses OpenSSL 3 which drops legacy MD4/MD5 providers.
@@ -110,7 +123,9 @@ jobs:
             docker builder prune -af --filter "until=24h" || true
             docker compose build frontend
             docker builder prune -af --filter "until=24h" || true
-            docker compose build ml-service
+            if [ "$BUILD_ML" = "true" ]; then
+              docker compose build ml-service
+            fi
 
             # ── Database migrations ──────────────────────────────────────────
             docker compose run --rm \
@@ -145,7 +160,9 @@ jobs:
                 docker builder prune -af --filter "until=24h" || true
                 docker compose build frontend
                 docker builder prune -af --filter "until=24h" || true
-                docker compose build ml-service
+                if [ "$BUILD_ML" = "true" ]; then
+                  docker compose build ml-service
+                fi
                 docker compose up --detach --remove-orphans
               else
                 echo "No previous commit to roll back to — manual intervention required"

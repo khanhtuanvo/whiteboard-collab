@@ -6,9 +6,15 @@ import logger from '../config/logger';
 import { Role } from '@prisma/client';
 
 const CACHE_TTL = 3600; // 1 hour
+const ML_TIMEOUT_MS = Number(process.env.ML_TIMEOUT_MS || 8000);
 
 function getMlServiceUrl(): string {
     return process.env.ML_SERVICE_URL || 'http://ml-service:5000';
+}
+
+function isMlEnabled(): boolean {
+    const value = (process.env.ML_ENABLED || 'true').trim().toLowerCase();
+    return !['0', 'false', 'no', 'off'].includes(value);
 }
 
 export interface StickyNoteInput {
@@ -67,7 +73,7 @@ function hashElements(elements: StickyNoteInput[], options?: ClusterOptions, k?:
 
 async function callMlService(elements: StickyNoteInput[], options?: ClusterOptions, k?: number): Promise<ClusterResult[]> {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30_000);
+    const timeoutId = setTimeout(() => controller.abort(), ML_TIMEOUT_MS);
 
     let response: Response;
     try {
@@ -83,7 +89,7 @@ async function callMlService(elements: StickyNoteInput[], options?: ClusterOptio
     } catch (err: unknown) {
         clearTimeout(timeoutId);
         if (err instanceof Error && err.name === 'AbortError') {
-            throw new Error('ML service timed out');
+            throw new Error(`ML service timed out after ${ML_TIMEOUT_MS}ms`);
         }
         throw err;
     }
@@ -102,7 +108,7 @@ async function callMlService(elements: StickyNoteInput[], options?: ClusterOptio
 const mlBreaker = new CircuitBreaker(callMlService, {
     errorThresholdPercentage: 50,
     resetTimeout: 30_000,
-    timeout: 31_000, // slightly longer than fetch timeout so AbortError surfaces first
+    timeout: ML_TIMEOUT_MS + 1000, // slightly longer than fetch timeout so AbortError surfaces first
 });
 
 mlBreaker.on('open', () => logger.warn('ML circuit breaker opened — ML service unreachable'));
@@ -153,6 +159,22 @@ export class AiService {
                 });
                 await (redis as unknown as { del: (key: string) => Promise<number> }).del(cacheKey).catch(() => undefined);
             }
+        }
+
+        if (!isMlEnabled()) {
+            logger.info('ML disabled via ML_ENABLED=false; returning degraded clustering response', {
+                boardId,
+                userId,
+            });
+            return {
+                results: elements.map((element) => ({
+                    id: element.id,
+                    cluster: 0,
+                    suggestedX: element.x,
+                    suggestedY: element.y,
+                })),
+                degraded: true,
+            };
         }
 
         try {
